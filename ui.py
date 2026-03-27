@@ -1,0 +1,627 @@
+"""
+ui.py
+-----
+Tkinter-based GUI for the AutoCAD Room Annotation tool.
+Manages the full workflow:
+  Step 1 - File selection (spreadsheet + DWG)
+  Step 2 - Column selection (room ID + building ID + fields to insert)
+  Step 3 - Preview & run the update process
+  Step 4 - Display summary results
+"""
+
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+import pythoncom
+
+from spreadsheet_loader import (
+    FileLoadError,
+    find_room_id_column_suggestion,
+    get_columns,
+    load_spreadsheet,
+)
+from utils import (
+    detect_building_column,
+    extract_building_id,
+    filter_dataframe_by_building,
+)
+
+
+# ---------------------------------------------------------------------------
+# Colour palette
+# ---------------------------------------------------------------------------
+BG_DARK = "#1e1e2e"
+BG_PANEL = "#2a2a3e"
+BG_CARD = "#313145"
+FG_PRIMARY = "#cdd6f4"
+FG_SECONDARY = "#a6adc8"
+FG_ACCENT = "#89b4fa"
+FG_SUCCESS = "#a6e3a1"
+FG_WARN = "#fab387"
+FG_ERROR = "#f38ba8"
+BTN_BG = "#585b70"
+BTN_ACTIVE = "#6c7086"
+ENTRY_BG = "#45475a"
+SCROLLBAR_BG = "#45475a"
+
+
+class AppUI:
+    """Main application window."""
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("AutoCAD Room Annotation Tool")
+        self.root.geometry("880x820")
+        self.root.minsize(780, 700)
+        self.root.configure(bg=BG_DARK)
+
+        # State
+        self._spreadsheet_path = tk.StringVar()
+        self._dwg_path = tk.StringVar()
+        self._room_id_col = tk.StringVar()
+        self._building_col = tk.StringVar()
+        self._building_id = tk.StringVar()
+        self._df = None
+        self._columns: list[str] = []
+        self._field_vars: dict[str, tk.BooleanVar] = {}
+        self._running = False
+
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self):
+        outer = tk.Frame(self.root, bg=BG_DARK, padx=16, pady=12)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        self._build_header(outer)
+        self._build_file_section(outer)
+        self._build_columns_section(outer)
+        self._build_run_section(outer)
+        self._build_log_section(outer)
+
+    def _build_header(self, parent):
+        header = tk.Frame(parent, bg=BG_DARK)
+        header.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(header, text="AutoCAD Room Annotation Tool",
+                 bg=BG_DARK, fg=FG_ACCENT,
+                 font=("Segoe UI", 17, "bold")).pack(side=tk.LEFT)
+        tk.Label(header, text="Annotate DWG rooms from spreadsheet data",
+                 bg=BG_DARK, fg=FG_SECONDARY,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(12, 0), pady=(6, 0))
+
+    def _build_file_section(self, parent):
+        card = self._card(parent, "Step 1 -- Select Files")
+
+        # Spreadsheet row
+        r1 = tk.Frame(card, bg=BG_CARD)
+        r1.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(r1, text="Spreadsheet:", bg=BG_CARD, fg=FG_PRIMARY,
+                 font=("Segoe UI", 9, "bold"), width=14, anchor="w").pack(side=tk.LEFT)
+        tk.Entry(r1, textvariable=self._spreadsheet_path, bg=ENTRY_BG, fg=FG_PRIMARY,
+                 insertbackground=FG_PRIMARY, relief=tk.FLAT, font=("Segoe UI", 9),
+                 state="readonly").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self._btn(r1, "Browse...", self._browse_spreadsheet).pack(side=tk.LEFT)
+
+        # DWG row
+        r2 = tk.Frame(card, bg=BG_CARD)
+        r2.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(r2, text="AutoCAD DWG:", bg=BG_CARD, fg=FG_PRIMARY,
+                 font=("Segoe UI", 9, "bold"), width=14, anchor="w").pack(side=tk.LEFT)
+        tk.Entry(r2, textvariable=self._dwg_path, bg=ENTRY_BG, fg=FG_PRIMARY,
+                 insertbackground=FG_PRIMARY, relief=tk.FLAT, font=("Segoe UI", 9),
+                 state="readonly").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self._btn(r2, "Browse...", self._browse_dwg).pack(side=tk.LEFT)
+
+        # Building ID display
+        r3 = tk.Frame(card, bg=BG_CARD)
+        r3.pack(fill=tk.X)
+        tk.Label(r3, text="Building ID:", bg=BG_CARD, fg=FG_PRIMARY,
+                 font=("Segoe UI", 9, "bold"), width=14, anchor="w").pack(side=tk.LEFT)
+        self._building_lbl = tk.Label(r3, textvariable=self._building_id,
+                                      bg=BG_CARD, fg=FG_SUCCESS,
+                                      font=("Segoe UI", 10, "bold"))
+        self._building_lbl.pack(side=tk.LEFT)
+
+    def _build_columns_section(self, parent):
+        card = self._card(parent, "Step 2 -- Configure Columns")
+
+        # Room Identifier dropdown
+        rid_row = tk.Frame(card, bg=BG_CARD)
+        rid_row.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(rid_row, text="Room Identifier:", bg=BG_CARD, fg=FG_PRIMARY,
+                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        self._room_id_combo = ttk.Combobox(
+            rid_row, textvariable=self._room_id_col,
+            state="disabled", font=("Segoe UI", 9), width=30,
+        )
+        self._room_id_combo.pack(side=tk.LEFT)
+
+        # Building Identifier column dropdown
+        bld_row = tk.Frame(card, bg=BG_CARD)
+        bld_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(bld_row, text="Building Column:", bg=BG_CARD, fg=FG_PRIMARY,
+                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        self._building_col_combo = ttk.Combobox(
+            bld_row, textvariable=self._building_col,
+            state="disabled", font=("Segoe UI", 9), width=30,
+        )
+        self._building_col_combo.pack(side=tk.LEFT)
+
+        self._style_combobox()
+
+        # Fields to insert checklist
+        tk.Label(card, text="Columns to insert into AutoCAD drawing:",
+                 bg=BG_CARD, fg=FG_PRIMARY,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+
+        scroll_outer = tk.Frame(card, bg=BG_CARD)
+        scroll_outer.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(scroll_outer, bg=BG_CARD, highlightthickness=0, height=110)
+        scrollbar = ttk.Scrollbar(scroll_outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._checkbox_frame = tk.Frame(canvas, bg=BG_CARD)
+        self._checkbox_window = canvas.create_window(
+            (0, 0), window=self._checkbox_frame, anchor="nw"
+        )
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(self._checkbox_window, width=event.width)
+
+        self._checkbox_frame.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        self._columns_canvas = canvas
+
+        # Select all / deselect all
+        btn_row = tk.Frame(card, bg=BG_CARD)
+        btn_row.pack(fill=tk.X, pady=(6, 0))
+        self._btn(btn_row, "Select All", self._select_all_fields,
+                  small=True).pack(side=tk.LEFT, padx=(0, 6))
+        self._btn(btn_row, "Deselect All", self._deselect_all_fields,
+                  small=True).pack(side=tk.LEFT)
+
+        # Placeholder
+        self._no_file_label = tk.Label(
+            self._checkbox_frame, text="Load a spreadsheet file first.",
+            bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9, "italic"),
+        )
+        self._no_file_label.pack(anchor="w", padx=4, pady=4)
+
+    def _build_run_section(self, parent):
+        row = tk.Frame(parent, bg=BG_DARK)
+        row.pack(fill=tk.X, pady=(6, 4))
+
+        self._run_btn = tk.Button(
+            row, text="Run Annotation", command=self._on_run,
+            bg=FG_ACCENT, fg=BG_DARK,
+            activebackground="#74c7ec", activeforeground=BG_DARK,
+            font=("Segoe UI", 10, "bold"),
+            relief=tk.FLAT, padx=20, pady=6, cursor="hand2",
+        )
+        self._run_btn.pack(side=tk.LEFT)
+
+        self._progress = ttk.Progressbar(row, mode="indeterminate", length=200)
+        self._progress.pack(side=tk.LEFT, padx=(16, 0))
+
+        self._status_lbl = tk.Label(row, text="", bg=BG_DARK, fg=FG_SECONDARY,
+                                    font=("Segoe UI", 9))
+        self._status_lbl.pack(side=tk.LEFT, padx=(10, 0))
+
+    def _build_log_section(self, parent):
+        card = self._card(parent, "Log / Results", expand=True)
+
+        text_frame = tk.Frame(card, bg=BG_CARD)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._log_text = tk.Text(
+            text_frame, bg=BG_PANEL, fg=FG_PRIMARY,
+            font=("Consolas", 9), relief=tk.FLAT, wrap=tk.WORD,
+            state=tk.DISABLED, yscrollcommand=scrollbar.set,
+        )
+        self._log_text.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self._log_text.yview)
+
+        self._log_text.tag_configure("INFO", foreground=FG_PRIMARY)
+        self._log_text.tag_configure("SUCCESS", foreground=FG_SUCCESS)
+        self._log_text.tag_configure("WARN", foreground=FG_WARN)
+        self._log_text.tag_configure("ERROR", foreground=FG_ERROR)
+        self._log_text.tag_configure("HEADER", foreground=FG_ACCENT,
+                                     font=("Consolas", 9, "bold"))
+
+        btn_row = tk.Frame(card, bg=BG_CARD)
+        btn_row.pack(fill=tk.X, pady=(6, 0))
+        self._btn(btn_row, "Clear Log", self._clear_log, small=True).pack(side=tk.RIGHT)
+
+    # ------------------------------------------------------------------
+    # Widget helpers
+    # ------------------------------------------------------------------
+
+    def _card(self, parent, title: str, expand: bool = False) -> tk.Frame:
+        fill_mode = tk.BOTH if expand else tk.X
+        wrapper = tk.LabelFrame(
+            parent, text=f"  {title}  ",
+            bg=BG_PANEL, fg=FG_ACCENT,
+            font=("Segoe UI", 9, "bold"),
+            relief=tk.GROOVE, bd=1, padx=10, pady=8,
+        )
+        wrapper.pack(fill=fill_mode, expand=expand, pady=(0, 8))
+        inner = tk.Frame(wrapper, bg=BG_CARD, padx=10, pady=8)
+        inner.pack(fill=tk.BOTH, expand=True)
+        return inner
+
+    def _btn(self, parent, text: str, command, small: bool = False) -> tk.Button:
+        return tk.Button(
+            parent, text=text, command=command,
+            bg=BTN_BG, fg=FG_PRIMARY,
+            activebackground=BTN_ACTIVE, activeforeground=FG_PRIMARY,
+            font=("Segoe UI", 8 if small else 9),
+            relief=tk.FLAT,
+            padx=8 if small else 12, pady=2 if small else 4,
+            cursor="hand2",
+        )
+
+    def _style_combobox(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TCombobox",
+                        fieldbackground=ENTRY_BG, background=BTN_BG,
+                        foreground=FG_PRIMARY, arrowcolor=FG_PRIMARY,
+                        selectbackground=ENTRY_BG, selectforeground=FG_PRIMARY)
+        style.configure("TScrollbar", background=SCROLLBAR_BG,
+                        troughcolor=BG_PANEL, arrowcolor=FG_SECONDARY)
+        style.configure("TProgressbar", background=FG_ACCENT, troughcolor=BG_PANEL)
+
+    # ------------------------------------------------------------------
+    # File browsing
+    # ------------------------------------------------------------------
+
+    def _browse_spreadsheet(self):
+        path = filedialog.askopenfilename(
+            title="Select Spreadsheet",
+            filetypes=[
+                ("Spreadsheet files", "*.csv *.xls *.xlsx"),
+                ("CSV files", "*.csv"),
+                ("Excel files", "*.xls *.xlsx"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        self._spreadsheet_path.set(path)
+        self._load_spreadsheet_columns(path)
+
+    def _browse_dwg(self):
+        path = filedialog.askopenfilename(
+            title="Select AutoCAD Drawing",
+            filetypes=[("AutoCAD Drawing", "*.dwg"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self._dwg_path.set(path)
+        self._log("DWG file selected: " + path, tag="INFO")
+
+        bid = extract_building_id(path)
+        self._building_id.set(bid)
+        self._log(f"Detected Building Identifier: {bid}", tag="SUCCESS")
+        self._set_status(f"Building: {bid}")
+
+    # ------------------------------------------------------------------
+    # Spreadsheet column loading
+    # ------------------------------------------------------------------
+
+    def _load_spreadsheet_columns(self, path: str):
+        self._set_status("Loading spreadsheet...")
+        self._log(f"Loading spreadsheet: {path}", tag="INFO")
+        try:
+            df = load_spreadsheet(path)
+        except FileLoadError as exc:
+            self._log(f"ERROR: {exc}", tag="ERROR")
+            messagebox.showerror("File Load Error", str(exc))
+            return
+
+        self._df = df
+        self._columns = get_columns(df)
+        self._log(f"Loaded {len(df)} rows, {len(self._columns)} columns.", tag="SUCCESS")
+        self._set_status(f"Spreadsheet loaded -- {len(self._columns)} columns.")
+
+        # Room Identifier dropdown
+        self._room_id_combo.configure(state="readonly", values=self._columns)
+        suggestion = find_room_id_column_suggestion(self._columns)
+        if suggestion:
+            self._room_id_col.set(suggestion)
+            self._log(f"Auto-detected Room Identifier column: '{suggestion}'", tag="SUCCESS")
+        elif self._columns:
+            self._room_id_col.set(self._columns[0])
+
+        # Building column dropdown
+        self._building_col_combo.configure(state="readonly", values=self._columns)
+        bld_suggestion = detect_building_column(self._columns)
+        if bld_suggestion:
+            self._building_col.set(bld_suggestion)
+            self._log(f"Auto-detected Building column: '{bld_suggestion}'", tag="SUCCESS")
+        elif self._columns:
+            self._building_col.set(self._columns[0])
+
+        self._build_column_checkboxes()
+
+    def _build_column_checkboxes(self):
+        for widget in self._checkbox_frame.winfo_children():
+            widget.destroy()
+        self._field_vars.clear()
+
+        if not self._columns:
+            tk.Label(self._checkbox_frame, text="No columns found.",
+                     bg=BG_CARD, fg=FG_SECONDARY,
+                     font=("Segoe UI", 9, "italic")).pack(anchor="w")
+            return
+
+        col_count = 2
+        for idx, col in enumerate(self._columns):
+            var = tk.BooleanVar(value=False)
+            self._field_vars[col] = var
+            cb = tk.Checkbutton(
+                self._checkbox_frame, text=col, variable=var,
+                bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_PANEL,
+                activebackground=BG_CARD, activeforeground=FG_ACCENT,
+                font=("Segoe UI", 9), anchor="w",
+            )
+            cb.grid(row=idx // col_count, column=idx % col_count,
+                    sticky="w", padx=(0, 20))
+
+        self._checkbox_frame.update_idletasks()
+        self._columns_canvas.configure(
+            scrollregion=self._columns_canvas.bbox("all")
+        )
+
+    def _select_all_fields(self):
+        for var in self._field_vars.values():
+            var.set(True)
+
+    def _deselect_all_fields(self):
+        for var in self._field_vars.values():
+            var.set(False)
+
+    # ------------------------------------------------------------------
+    # Run button
+    # ------------------------------------------------------------------
+
+    def _on_run(self):
+        if self._running:
+            return
+
+        if not self._spreadsheet_path.get():
+            messagebox.showwarning("Missing Input", "Please select a spreadsheet file.")
+            return
+        if not self._dwg_path.get():
+            messagebox.showwarning("Missing Input", "Please select an AutoCAD DWG file.")
+            return
+        if self._df is None:
+            messagebox.showwarning("Missing Input", "Spreadsheet not loaded yet.")
+            return
+
+        room_id_col = self._room_id_col.get()
+        if not room_id_col:
+            messagebox.showwarning("Missing Input", "Please select the Room Identifier column.")
+            return
+
+        building_col = self._building_col.get()
+        if not building_col:
+            messagebox.showwarning("Missing Input", "Please select the Building Identifier column.")
+            return
+
+        selected_cols = [col for col, var in self._field_vars.items() if var.get()]
+        if not selected_cols:
+            messagebox.showwarning(
+                "Missing Input", "Please select at least one column to insert."
+            )
+            return
+
+        self._set_running(True)
+        thread = threading.Thread(
+            target=self._run_annotation,
+            args=(
+                self._dwg_path.get(),
+                self._df.copy(),
+                room_id_col,
+                building_col,
+                selected_cols,
+            ),
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_annotation(self, dwg_path, df, room_id_col, building_col, selected_cols):
+        """Worker thread: full annotation pipeline."""
+        from autocad_scanner import AutoCADError, scan_drawing
+        from polygon_matcher import associate_texts_with_polygons, match_rooms
+        from annotation_writer import write_annotations
+
+        pythoncom.CoInitialize()
+        try:
+            self._log("=" * 56, tag="HEADER")
+            self._log("Starting AutoCAD Room Annotation", tag="HEADER")
+            self._log("=" * 56, tag="HEADER")
+
+            # --- Phase 1: Building validation ---
+            building_id = extract_building_id(dwg_path)
+            self._log(f"Building Identifier: {building_id}", tag="INFO")
+
+            self._set_status(f"Filtering rows for building {building_id}...")
+            self._log(f"Filtering spreadsheet by building column '{building_col}' = {building_id}...", tag="INFO")
+            filtered_df = filter_dataframe_by_building(df, building_col, building_id)
+
+            if filtered_df.empty:
+                self._log(
+                    f"No spreadsheet rows match building {building_id}. Update cancelled.",
+                    tag="ERROR",
+                )
+                self._set_status(f"Stopped -- no rows for building {building_id}.")
+                messagebox.showwarning(
+                    "No Matching Rows",
+                    f"No spreadsheet rows match building {building_id}.\n"
+                    "Update cancelled.",
+                )
+                return
+
+            self._log(
+                f"  Rows after filter: {len(filtered_df)} (of {len(df)} total)",
+                tag="SUCCESS",
+            )
+
+            # --- Phase 2: Scan drawing ---
+            self._set_status("Scanning AutoCAD drawing...")
+            self._log("Scanning drawing for room texts and polygons...", tag="INFO")
+            scan = scan_drawing(dwg_path, log_fn=self._log)
+
+            if not scan.room_texts:
+                self._log(
+                    "WARNING: No room identifiers found in the drawing.",
+                    tag="WARN",
+                )
+                self._set_status("Stopped -- no rooms detected.")
+                return
+
+            # --- Phase 3: Associate texts with polygons ---
+            self._set_status("Associating texts with room polygons...")
+            self._log("Associating room texts with polygons...", tag="INFO")
+            associations = associate_texts_with_polygons(
+                scan.room_texts, scan.polygons, log_fn=self._log,
+            )
+
+            # --- Phase 4: Match with spreadsheet ---
+            self._set_status("Matching rooms to spreadsheet data...")
+            self._log("Matching rooms to spreadsheet...", tag="INFO")
+            summary = match_rooms(
+                scan.room_texts, associations, filtered_df,
+                room_id_col, selected_cols,
+            )
+
+            # --- Preview ---
+            self._log("\nPre-write preview:", tag="HEADER")
+            self._log(f"  Building             : {building_id}")
+            self._log(f"  Room texts found     : {summary.total_texts}")
+            self._log(f"  Polygons found       : {len(scan.polygons)}")
+            self._log(f"  Texts with polygon   : {summary.texts_with_polygon}")
+            self._log(f"  Texts without polygon: {summary.texts_without_polygon}")
+            self._log(f"  Spreadsheet rows     : {summary.total_sheet_rows}")
+            self._log(f"  Matched rooms        : {summary.matched_count}", tag="SUCCESS")
+            unmatched_count = len(summary.unmatched_drawing)
+            if unmatched_count:
+                self._log(f"  Unmatched drawing    : {unmatched_count}", tag="WARN")
+                for uid in summary.unmatched_drawing[:10]:
+                    self._log(f"    - {uid}", tag="WARN")
+                if unmatched_count > 10:
+                    self._log(f"    ... and {unmatched_count - 10} more", tag="WARN")
+
+            if summary.matched_count == 0:
+                self._log(
+                    "WARNING: No rooms matched. Check Room Identifier values.",
+                    tag="WARN",
+                )
+                self._set_status("Stopped -- no matches found.")
+                return
+
+            # --- Phase 5: Write annotations ---
+            self._set_status("Writing annotations to drawing...")
+            self._log("Inserting annotations with polygon linkage...", tag="INFO")
+            output_path, inserted = write_annotations(
+                dwg_path,
+                summary.results,
+                scan.room_texts,
+                building_id,
+                scan.existing_annotation_room_ids,
+                log_fn=self._log,
+            )
+
+            # --- Phase 6: Summary ---
+            self._log("\n" + "=" * 56, tag="HEADER")
+            self._log("SUMMARY", tag="HEADER")
+            self._log("=" * 56, tag="HEADER")
+            self._log(f"  Building             : {building_id}")
+            self._log(f"  Rows after filter    : {len(filtered_df)}")
+            self._log(f"  Room texts found     : {summary.total_texts}")
+            self._log(f"  Polygons found       : {len(scan.polygons)}")
+            self._log(f"  Text-polygon links   : {summary.texts_with_polygon}")
+            self._log(f"  Matched rooms        : {summary.matched_count}", tag="SUCCESS")
+            self._log(
+                f"  Unmatched rooms      : {unmatched_count}",
+                tag="WARN" if unmatched_count else "INFO",
+            )
+            self._log(f"  Annotations inserted : {inserted}", tag="SUCCESS")
+            self._log(f"  Output file          : {output_path}", tag="SUCCESS")
+            self._log("=" * 56, tag="HEADER")
+
+            self._set_status(f"Done -- {inserted} annotations inserted.")
+            messagebox.showinfo(
+                "Complete",
+                f"Annotation complete!\n\n"
+                f"Building        : {building_id}\n"
+                f"Polygon links   : {summary.texts_with_polygon}\n"
+                f"Matched rooms   : {summary.matched_count}\n"
+                f"Inserted        : {inserted}\n"
+                f"Output saved to :\n{output_path}",
+            )
+
+        except AutoCADError as exc:
+            self._log(f"AutoCAD ERROR: {exc}", tag="ERROR")
+            self._set_status("Error -- see log.")
+            messagebox.showerror("AutoCAD Error", str(exc))
+
+        except Exception as exc:
+            self._log(f"Unexpected error: {exc}", tag="ERROR")
+            self._set_status("Unexpected error -- see log.")
+            messagebox.showerror("Error", f"An unexpected error occurred:\n{exc}")
+
+        finally:
+            self._set_running(False)
+            pythoncom.CoUninitialize()
+
+    # ------------------------------------------------------------------
+    # UI state helpers (thread-safe)
+    # ------------------------------------------------------------------
+
+    def _set_running(self, running: bool):
+        def _update():
+            self._running = running
+            state = tk.DISABLED if running else tk.NORMAL
+            self._run_btn.configure(state=state)
+            if running:
+                self._progress.start(12)
+            else:
+                self._progress.stop()
+        self.root.after(0, _update)
+
+    def _set_status(self, text: str):
+        self.root.after(0, lambda: self._status_lbl.configure(text=text))
+
+    def _log(self, message: str, tag: str = "INFO"):
+        def _append():
+            self._log_text.configure(state=tk.NORMAL)
+            self._log_text.insert(tk.END, message + "\n", tag)
+            self._log_text.see(tk.END)
+            self._log_text.configure(state=tk.DISABLED)
+        self.root.after(0, _append)
+
+    def _clear_log(self):
+        self._log_text.configure(state=tk.NORMAL)
+        self._log_text.delete("1.0", tk.END)
+        self._log_text.configure(state=tk.DISABLED)
