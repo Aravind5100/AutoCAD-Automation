@@ -312,7 +312,12 @@ class AppUI:
     def _browse_dwg(self):
         path = filedialog.askopenfilename(
             title="Select AutoCAD Drawing",
-            filetypes=[("AutoCAD Drawing", "*.dwg"), ("All files", "*.*")],
+            filetypes=[
+                ("AutoCAD files", "*.dwg *.dxf"),
+                ("DWG files", "*.dwg"),
+                ("DXF files", "*.dxf"),
+                ("All files", "*.*"),
+            ],
         )
         if not path:
             return
@@ -454,12 +459,29 @@ class AppUI:
         from autocad_scanner import AutoCADError, scan_drawing
         from polygon_matcher import associate_texts_with_polygons, match_rooms
         from annotation_writer import write_annotations
+        from dwg_converter import dwg_to_dxf, dxf_doc_to_dwg, ConversionError
 
         pythoncom.CoInitialize()
         try:
             self._log("=" * 56, tag="HEADER")
             self._log("Starting AutoCAD Room Annotation", tag="HEADER")
             self._log("=" * 56, tag="HEADER")
+
+            # --- Phase 0: DWG -> DXF conversion (if needed) ---
+            import os
+            is_dwg = dwg_path.lower().endswith(".dwg")
+            if is_dwg:
+                self._set_status("Converting DWG to DXF...")
+                self._log("Converting DWG -> DXF via AutoCAD...", tag="INFO")
+                try:
+                    dxf_path = dwg_to_dxf(dwg_path, log_fn=self._log)
+                except ConversionError as exc:
+                    self._log(f"Conversion ERROR: {exc}", tag="ERROR")
+                    self._set_status("Error -- DWG conversion failed.")
+                    messagebox.showerror("Conversion Error", str(exc))
+                    return
+            else:
+                dxf_path = dwg_path
 
             # --- Phase 1: Building validation ---
             building_id = extract_building_id(dwg_path)
@@ -487,10 +509,10 @@ class AppUI:
                 tag="SUCCESS",
             )
 
-            # --- Phase 2: Scan drawing ---
-            self._set_status("Scanning AutoCAD drawing...")
-            self._log("Scanning drawing for room texts and polygons...", tag="INFO")
-            scan = scan_drawing(dwg_path, log_fn=self._log)
+            # --- Phase 2: Scan DXF ---
+            self._set_status("Scanning drawing (ezdxf)...")
+            self._log("Scanning DXF for room texts and polygons...", tag="INFO")
+            scan = scan_drawing(dxf_path, log_fn=self._log)
 
             if not scan.room_texts:
                 self._log(
@@ -540,17 +562,38 @@ class AppUI:
                 self._set_status("Stopped -- no matches found.")
                 return
 
-            # --- Phase 5: Write annotations ---
-            self._set_status("Writing annotations to drawing...")
-            self._log("Inserting annotations with polygon linkage...", tag="INFO")
-            output_path, inserted = write_annotations(
-                dwg_path,
+            # --- Phase 5: Write annotations to in-memory DXF ---
+            self._set_status("Writing block annotations...")
+            self._log("Inserting attributed block annotations...", tag="INFO")
+            annotated_dxf_doc, inserted = write_annotations(
+                dxf_path,
                 summary.results,
                 scan.room_texts,
                 building_id,
                 scan.existing_annotation_room_ids,
                 log_fn=self._log,
             )
+
+            # --- Phase 5b: Convert annotated DXF to DWG (no intermediate file) ---
+            if is_dwg:
+                self._set_status("Converting to DWG...")
+                self._log("Converting annotated DXF -> DWG (no intermediate files)...", tag="INFO")
+                output_path = os.path.splitext(dwg_path)[0] + "_annotated.dwg"
+                try:
+                    output_path = dxf_doc_to_dwg(annotated_dxf_doc, output_path, log_fn=self._log)
+                except ConversionError as exc:
+                    self._log(f"DXF->DWG conversion failed: {exc}", tag="ERROR")
+                    self._set_status("Error -- DXF->DWG conversion failed.")
+                    messagebox.showerror("Conversion Error", str(exc))
+                    return
+            else:
+                # If input was DXF, save the annotated DXF
+                output_path = os.path.splitext(dxf_path)[0] + "_annotated.dxf"
+                self._log(f"Saving annotated DXF: {os.path.basename(output_path)}", tag="INFO")
+                try:
+                    annotated_dxf_doc.saveas(output_path)
+                except Exception as exc:
+                    self._log(f"Failed to save annotated DXF: {exc}", tag="WARN")
 
             # --- Phase 6: Summary ---
             self._log("\n" + "=" * 56, tag="HEADER")

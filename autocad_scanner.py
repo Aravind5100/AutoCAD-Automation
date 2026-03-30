@@ -1,33 +1,40 @@
 """
 autocad_scanner.py
 ------------------
-Connects to AutoCAD via COM, opens a DWG, and performs a **single-pass**
-scan of ModelSpace to collect:
+Uses **ezdxf** to scan a DXF file and collect:
 
   1. Room identifier TEXT / MTEXT entities
   2. Closed polyline (room polygon) candidates
+  3. Existing block-insert annotations (for dedup)
 
-All entity properties are cached into plain Python dataclasses so that
-no further COM round-trips are needed after scanning.
+The DXF file is produced from the original DWG by ``dwg_converter.py``.
+All entity properties are cached into plain Python dataclasses.
 """
 
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-import pythoncom
-import win32com.client
+import ezdxf
 
 from config import (
+    BLOCK_LAYER,
     DEFAULT_TEXT_HEIGHT,
     OUTPUT_LAYER,
     SCAN_PROGRESS_INTERVAL,
     XDATA_APP_NAME,
 )
-from utils import is_room_identifier, is_valid_room_polygon
+from utils import (
+    is_room_identifier,
+    is_valid_room_polygon,
+    normalize_room_id,
+    polygon_area,
+    polygon_bbox,
+    polygon_centroid,
+    strip_mtext_formatting,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,18 +42,18 @@ from utils import is_room_identifier, is_valid_room_polygon
 # ---------------------------------------------------------------------------
 
 class AutoCADError(Exception):
-    """Raised for any unrecoverable AutoCAD / COM error."""
+    """Raised for any unrecoverable file / scan error."""
 
 
 # ---------------------------------------------------------------------------
-# Scanned-entity dataclasses  (pure Python — no COM references)
+# Scanned-entity dataclasses  (pure Python)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class RoomText:
     """Cached properties of a TEXT / MTEXT entity that is a room identifier."""
     handle: str = ""
-    entity_type: str = ""           # AcDbText | AcDbMText
+    entity_type: str = ""           # TEXT | MTEXT
     text: str = ""
     normalized_text: str = ""
     position: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -59,7 +66,7 @@ class RoomText:
 class RoomPolygon:
     """Cached properties of a closed polyline that may be a room boundary."""
     handle: str = ""
-    entity_type: str = ""           # AcDbPolyline | AcDb2dPolyline
+    entity_type: str = ""           # LWPOLYLINE | POLYLINE
     layer: str = ""
     closed: bool = False
     vertices: list[tuple[float, float]] = field(default_factory=list)
@@ -82,15 +89,15 @@ class ScanResult:
 # ---------------------------------------------------------------------------
 
 def scan_drawing(
-    dwg_path: str,
+    dxf_path: str,
     log_fn: Callable[[str], None] | None = None,
 ) -> ScanResult:
-    """Open a DWG and scan ModelSpace for room texts and polygons.
+    """Scan a DXF file for room texts and polygons using ezdxf.
 
     Parameters
     ----------
-    dwg_path : str
-        Absolute path to the DWG file.
+    dxf_path : str
+        Absolute path to the DXF file.
     log_fn : callable, optional
         Accepts a single string for progress logging.
 
@@ -100,17 +107,42 @@ def scan_drawing(
         Contains room_texts, polygons, total_entities, and
         existing_annotation_room_ids (for dedup).
     """
-    _log(log_fn, "Connecting to AutoCAD...")
-    acad = _get_acad_instance()
+    abs_path = os.path.abspath(dxf_path)
+    if not os.path.exists(abs_path):
+        raise AutoCADError(f"DXF file not found:\n{abs_path}")
 
-    _log(log_fn, f"Opening drawing: {os.path.basename(dwg_path)}")
-    doc = _open_document(acad, dwg_path, read_only=False)
+    _log(log_fn, f"Reading DXF: {os.path.basename(abs_path)}")
+    try:
+        doc = ezdxf.readfile(abs_path)
+    except Exception as exc:
+        raise AutoCADError(
+            f"Failed to read DXF file:\n{abs_path}\n"
+            f"Error: {exc}"
+        ) from exc
 
-    # Wait for document to fully load
-    model_space = _get_model_space(doc, log_fn)
+    msp = doc.modelspace()
+    entities = list(msp)
+    total = len(entities)
 
-    result = _scan_model_space(model_space, log_fn)
+    _log(log_fn, f"  Scanning {total} model-space entities...")
+    result = ScanResult(total_entities=total)
 
+    for i, entity in enumerate(entities):
+        if i > 0 and i % SCAN_PROGRESS_INTERVAL == 0:
+            _log(log_fn, f"    ...scanned {i}/{total}")
+
+        etype = entity.dxftype()
+
+        if etype in ("TEXT", "MTEXT"):
+            _process_text_entity(entity, etype, result)
+
+        elif etype in ("LWPOLYLINE", "POLYLINE"):
+            _process_polygon_entity(entity, etype, result)
+
+        elif etype == "INSERT":
+            _process_block_dedup(entity, result)
+
+    _log(log_fn, f"    ...scan complete ({total} entities)")
     _log(log_fn, f"  Room identifiers found : {len(result.room_texts)}")
     _log(log_fn, f"  Polygon candidates     : {len(result.polygons)}")
     if result.existing_annotation_room_ids:
@@ -120,136 +152,24 @@ def scan_drawing(
 
 
 # ---------------------------------------------------------------------------
-# AutoCAD connection helpers
+# Entity processors
 # ---------------------------------------------------------------------------
-
-def _get_acad_instance():
-    """Get or launch the AutoCAD COM application."""
-    try:
-        return win32com.client.Dispatch("AutoCAD.Application")
-    except Exception as exc:
-        raise AutoCADError(
-            "Could not connect to AutoCAD. "
-            "Please ensure AutoCAD is running.\n"
-            f"Detail: {exc}"
-        ) from exc
-
-
-def _open_document(acad, dwg_path: str, read_only: bool = False):
-    """Open a DWG and return the Document COM object."""
-    abs_path = os.path.abspath(dwg_path)
-
-    if not os.path.exists(abs_path):
-        raise AutoCADError(
-            f"Drawing file not found:\n{abs_path}\n\n"
-            "Please verify the file path and try again."
-        )
-
-    # Check if already open
-    existing = _find_open_document(acad, abs_path)
-    if existing is not None:
-        return existing
-
-    try:
-        return acad.Documents.Open(abs_path, read_only)
-    except Exception as exc:
-        raise AutoCADError(
-            f"Failed to open drawing:\n{abs_path}\n\n"
-            f"Error: {exc}\n\n"
-            "Possible causes:\n"
-            "  - File is locked or in use\n"
-            "  - AutoCAD doesn't have read permission\n"
-            "  - File is corrupted\n"
-            "  - AutoCAD version incompatibility"
-        ) from exc
-
-
-def _find_open_document(acad, dwg_path: str):
-    """Return the Document COM object if already open, else None."""
-    abs_lower = os.path.abspath(dwg_path).lower()
-    try:
-        for i in range(acad.Documents.Count):
-            doc = acad.Documents.Item(i)
-            try:
-                if doc.FullName.lower() == abs_lower:
-                    return doc
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return None
-
-
-def _get_model_space(doc, log_fn, max_retries: int = 3):
-    """Access ModelSpace with retry logic for slow-loading documents."""
-    for attempt in range(max_retries):
-        try:
-            return doc.ModelSpace
-        except Exception as exc:
-            if attempt < max_retries - 1:
-                _log(log_fn, f"  Waiting for document to load (attempt {attempt + 2}/{max_retries})...")
-                time.sleep(1)
-            else:
-                raise AutoCADError(
-                    f"Failed to access ModelSpace after {max_retries} attempts.\n"
-                    f"The document may be corrupted or unsupported.\n"
-                    f"Detail: {exc}"
-                ) from exc
-
-
-# ---------------------------------------------------------------------------
-# Single-pass ModelSpace scanner
-# ---------------------------------------------------------------------------
-
-_TEXT_TYPES = {"AcDbText", "AcDbMText"}
-_POLY_TYPES = {"AcDbPolyline", "AcDb2dPolyline"}
-
-
-def _scan_model_space(model_space, log_fn) -> ScanResult:
-    """Iterate ModelSpace once, collecting texts + polygons + existing annotations."""
-    total = model_space.Count
-    _log(log_fn, f"  Scanning {total} model-space entities...")
-
-    result = ScanResult(total_entities=total)
-    progress = SCAN_PROGRESS_INTERVAL
-
-    for i in range(total):
-        if i > 0 and i % progress == 0:
-            _log(log_fn, f"    ...scanned {i}/{total}")
-
-        try:
-            entity = model_space.Item(i)
-            etype = entity.EntityName
-        except Exception:
-            continue
-
-        # --- TEXT / MTEXT ---
-        if etype in _TEXT_TYPES:
-            _process_text_entity(entity, etype, result)
-
-        # --- LWPOLYLINE / 2dPolyline ---
-        elif etype in _POLY_TYPES:
-            _process_polygon_entity(entity, etype, result)
-
-    _log(log_fn, f"    ...scan complete ({total} entities)")
-    return result
-
 
 def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
     """Extract properties from a TEXT/MTEXT entity and add to result."""
     try:
-        text_val = str(entity.TextString).strip()
+        if etype == "MTEXT":
+            raw_text = entity.text  # ezdxf returns raw MTEXT content
+            text_val = strip_mtext_formatting(raw_text).strip()
+        else:
+            text_val = str(entity.dxf.text).strip()
     except Exception:
         return
 
-    # Check for existing annotations (dedup detection)
-    try:
-        layer = str(entity.Layer)
-    except Exception:
-        layer = ""
+    layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
 
-    if layer == OUTPUT_LAYER and etype == "AcDbMText":
-        # This is an annotation we previously inserted — record for dedup
+    # Dedup: check for existing MTEXT annotations on OUTPUT_LAYER
+    if layer == OUTPUT_LAYER and etype == "MTEXT":
         _record_existing_annotation(entity, result)
         return
 
@@ -257,12 +177,26 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
         return
 
     try:
-        pos = _read_position(entity, etype)
-        height = _read_height(entity, etype)
-        style = _read_style(entity)
-        handle = entity.Handle
+        if etype == "MTEXT":
+            ins = entity.dxf.insert
+        else:
+            ins = entity.dxf.insert
+        pos = (float(ins[0]), float(ins[1]),
+               float(ins[2]) if len(ins) > 2 else 0.0)
     except Exception:
-        return
+        pos = (0.0, 0.0, 0.0)
+
+    try:
+        height = float(entity.dxf.height) if entity.dxf.hasattr("height") else DEFAULT_TEXT_HEIGHT
+    except Exception:
+        height = DEFAULT_TEXT_HEIGHT
+
+    try:
+        style = entity.dxf.style if entity.dxf.hasattr("style") else ""
+    except Exception:
+        style = ""
+
+    handle = entity.dxf.handle if entity.dxf.hasattr("handle") else ""
 
     result.room_texts.append(RoomText(
         handle=str(handle),
@@ -279,7 +213,7 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
 def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
     """Extract properties from a polyline entity and add to result if valid."""
     try:
-        closed = bool(entity.Closed)
+        closed = entity.is_closed
     except Exception:
         return
 
@@ -287,19 +221,20 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
         return
 
     try:
-        coords = list(entity.Coordinates)
-        handle = entity.Handle
-        layer = str(entity.Layer)
+        if etype == "LWPOLYLINE":
+            vertices = [(float(p[0]), float(p[1])) for p in entity.get_points(format="xy")]
+        else:
+            # POLYLINE (2D) entity — vertices have .dxf.location (Vec3)
+            vertices = [(float(v.dxf.location.x), float(v.dxf.location.y))
+                        for v in entity.vertices]
     except Exception:
         return
 
-    # LWPOLYLINE coords are flat: [x1,y1, x2,y2, ...]
-    vertices = _coords_to_vertices(coords)
+    layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
+    handle = entity.dxf.handle if entity.dxf.hasattr("handle") else ""
 
     if not is_valid_room_polygon(vertices, closed):
         return
-
-    from utils import polygon_area, polygon_centroid, polygon_bbox
 
     area = polygon_area(vertices)
     centroid = polygon_centroid(vertices)
@@ -320,46 +255,49 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
 def _record_existing_annotation(entity, result: ScanResult) -> None:
     """Check if an MTEXT on OUTPUT_LAYER has our XData and record its room_id."""
     try:
-        from metadata_utils import read_xdata
-        meta = read_xdata(entity)
-        if meta and meta.room_id:
-            result.existing_annotation_room_ids.add(meta.room_id.strip().lower())
+        if entity.xdata is not None:
+            for appid, tags in entity.xdata:
+                if appid == XDATA_APP_NAME and len(tags) >= 2:
+                    room_id = str(tags[1].value).strip().lower()
+                    if room_id:
+                        result.existing_annotation_room_ids.add(room_id)
+                    return
     except Exception:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Property readers (minimal COM calls per entity)
-# ---------------------------------------------------------------------------
-
-def _read_position(entity, etype: str) -> tuple[float, float, float]:
-    if etype == "AcDbMText":
-        pt = entity.InsertionPoint
-    else:
-        pt = entity.InsertionPoint
-    return (float(pt[0]), float(pt[1]), float(pt[2]) if len(pt) > 2 else 0.0)
-
-
-def _read_height(entity, etype: str) -> float:
+def _process_block_dedup(entity, result: ScanResult) -> None:
+    """Check if a block INSERT on BLOCK_LAYER is an existing annotation (dedup)."""
     try:
-        return float(entity.Height)
+        layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
     except Exception:
-        return DEFAULT_TEXT_HEIGHT
+        return
 
+    if layer != BLOCK_LAYER:
+        return
 
-def _read_style(entity) -> str:
+    # Try XData first
     try:
-        return str(entity.StyleName)
+        if entity.xdata is not None:
+            for appid, tags in entity.xdata:
+                if appid == XDATA_APP_NAME and len(tags) >= 2:
+                    room_id = str(tags[1].value).strip().lower()
+                    if room_id:
+                        result.existing_annotation_room_ids.add(room_id)
+                    return
     except Exception:
-        return ""
+        pass
 
-
-def _coords_to_vertices(coords: list) -> list[tuple[float, float]]:
-    """Convert a flat coordinate list [x1,y1,x2,y2,...] to [(x1,y1), ...]."""
-    vertices = []
-    for i in range(0, len(coords) - 1, 2):
-        vertices.append((float(coords[i]), float(coords[i + 1])))
-    return vertices
+    # Fallback: check attributes for a ROOM_IDENTIFIER tag
+    try:
+        if entity.has_attrib("ROOM_IDENTIFIER"):
+            attrib = entity.attribs.get("ROOM_IDENTIFIER")
+            if attrib is not None:
+                rid = normalize_room_id(attrib.dxf.text)
+                if rid:
+                    result.existing_annotation_room_ids.add(rid)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

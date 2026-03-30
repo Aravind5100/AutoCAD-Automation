@@ -143,27 +143,49 @@ For each room identifier TEXT/MTEXT:
 
 ---
 
-## Annotation ↔ Polygon Linkage (XData)
+## Annotations — Attributed Blocks (ArcGIS-Compatible)
 
-Each inserted MTEXT carries AutoCAD XData under the application name `ROOM_INFO_AI`:
+Annotations are inserted as **AutoCAD attributed blocks** (ATTDEF/ATTRIB), not MTEXT.
+Each room gets one block insert with one attribute per selected spreadsheet column.
 
-| XData Field | Content |
-|---|---|
-| Application | `ROOM_INFO_AI` |
-| Room ID | e.g. `101` |
-| Polygon Handle | AutoCAD entity handle of the linked polygon |
-| Building ID | e.g. `ENGR` |
-| Text Handle | Handle of the source room identifier text |
-| Match Method | `contains` or `nearest` |
-| Annotation Type | `room_info` |
+When this DWG is imported into ArcGIS, room attributes appear as structured fields
+in the attribute table — no manual mapping required.
 
-### Querying the linkage later
+### ArcGIS import steps
+
+1. Add Data → select the `_updated.dwg` file
+2. Choose the annotation layer (`ROOM_DATA`)
+3. Open Attribute Table → all room fields are populated
+
+### What ArcGIS sees
+
+| ROOM_IDENTIFIER | BUILDING_ID | DEPARTMENT    | OCCUPIED_BY   |
+|-----------------|-------------|---------------|---------------|
+| 1300            | 0152        | Engineering   | John Smith    |
+| 1301            | 0152        | Admin         | Jane Doe      |
+
+### Block structure per room
+
+- **Block definition:** `ROOM_BLOCK_<ROOM_ID>` with one ATTDEF per column
+- **Block insert:** Placed on `ROOM_DATA` layer at the room text position
+- **Outline:** Closed LWPOLYLINE on `ROOM_BLOCK_OUTLINE` layer
+- **XData:** `ROOM_INFO_AI` metadata on the block insert (for internal querying)
+
+### ArcGIS compatibility rules enforced
+
+- Block names: alphanumeric + underscore only, max 255 chars
+- Attribute TAGs: alphanumeric + underscore only, max 30 chars
+- Layer names: alphanumeric + underscore only
+- Static attributed blocks only (no dynamic blocks)
+- Original drawing coordinate system preserved exactly
+
+### Querying the linkage programmatically
 
 ```python
 from metadata_utils import read_xdata
 
-# Given an annotation entity from AutoCAD:
-meta = read_xdata(annotation_entity)
+# Given a block insert entity from AutoCAD:
+meta = read_xdata(block_ref_entity)
 if meta:
     print(f"Room: {meta.room_id}")
     print(f"Polygon handle: {meta.polygon_handle}")

@@ -45,6 +45,23 @@ MAX_NEAREST_DISTANCE: float = 500.0      # max centroid distance for fallback
 XDATA_APP_NAME: str = "ROOM_INFO_AI"
 
 # ---------------------------------------------------------------------------
+# Attributed block inserts (ArcGIS-compatible)
+# ---------------------------------------------------------------------------
+BLOCK_NAME_PREFIX: str = "ROOM_BLOCK"         # prefix for block definition names
+BLOCK_LAYER: str = "ROOM_DATA"                # layer for block inserts
+BLOCK_OUTLINE_LAYER: str = "ROOM_BLOCK_OUTLINE"  # layer for outline rectangle
+ATTR_TEXT_HEIGHT_FACTOR: float = 1.0          # attr height = room text height × this
+ATTR_LINE_SPACING: float = 1.6               # vertical spacing between attributes
+BLOCK_PADDING: float = 0.5                   # padding inside outline rectangle
+ARCGIS_SAFE_LAYER: str = "ROOM_DATA"         # ArcGIS-safe layer name
+
+# ---------------------------------------------------------------------------
+# DWG ↔ DXF conversion
+# ---------------------------------------------------------------------------
+DXF_VERSION: str = "R12"                 # DXF version for SaveAs
+ACAD_DXF_FORMAT: int = 1                 # AutoCAD SaveAs format code for R12 DXF
+
+# ---------------------------------------------------------------------------
 # Scan performance
 # ---------------------------------------------------------------------------
 SCAN_PROGRESS_INTERVAL: int = 2000       # log progress every N entities

@@ -94,6 +94,55 @@ def filter_dataframe_by_building(df, building_col: str, building_id: str):
 
 
 # ---------------------------------------------------------------------------
+# MTEXT formatting stripper
+# ---------------------------------------------------------------------------
+
+# Common MTEXT formatting codes returned by AutoCAD COM TextString:
+#   {\fArial|b0|i0|c0|p34;...}   font/style blocks
+#   \A0; \A1; \A2;               alignment
+#   \P                            paragraph break
+#   \L \l                         underline on/off
+#   \O \o                         overline on/off
+#   \K \k                         strikethrough on/off
+#   \H1.5x;                       height
+#   \W0.8;                        width factor
+#   \C1;                          colour
+#   \T1.0;                        tracking
+#   \Q20;                         oblique angle
+#   \S...^...;                    stacking
+#   {} braces                     grouping
+
+_MTEXT_FORMAT_RE = re.compile(
+    r"\\[Aa][0-9]*;"          # alignment  \A1;
+    r"|\\[LlOoKkPp]"          # toggles    \L \l \O \o \K \k \P
+    r"|\\[HhWwCcTtQq][^;]*;"  # sized codes \H1.5x; \W0.8; \C1; etc.
+    r"|\\[Ff][^;]*;"           # font       \fArial|b0|i0;
+    r"|\\[Ss][^;]*;"           # stacking   \S...;
+    r"|\\~"                    # non-breaking space
+    r"|\{|\}",                 # braces
+)
+
+
+def strip_mtext_formatting(text: str) -> str:
+    """Remove AutoCAD MTEXT formatting codes, returning plain text.
+
+    Examples:
+        ``{\\fArial|b0|i0;1000}`` → ``1000``
+        ``\\A1;Room 101``         → ``Room 101``
+        ``Line1\\PLine2``         → ``Line1 Line2``
+    """
+    if not text:
+        return ""
+    # Remove \f font specs inside braces:  {\fArial|b0|i0|c0|p34;TEXT}
+    cleaned = re.sub(r"\{\\f[^;]*;([^}]*)\}", r"\1", text)
+    # Remove remaining formatting codes
+    cleaned = _MTEXT_FORMAT_RE.sub("", cleaned)
+    # Collapse whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+# ---------------------------------------------------------------------------
 # Room identifier detection heuristics
 # ---------------------------------------------------------------------------
 
@@ -238,6 +287,36 @@ def format_mtext_content(fields: dict[str, str]) -> str:
         display_label = label.strip().title()
         lines.append(f"{display_label}: {value}")
     return r"\P".join(lines)
+
+
+def build_attribute_map(
+    selected_columns: list[str], row_data: dict[str, str],
+) -> list[tuple[str, str, str]]:
+    """Build a list of (tag, prompt, value) tuples for block attribute creation.
+
+    Parameters
+    ----------
+    selected_columns : list[str]
+        Original column names chosen by the user.
+    row_data : dict[str, str]
+        Column-name → cell-value mapping from the matched spreadsheet row.
+
+    Returns
+    -------
+    list of (tag, prompt, value)
+        - **tag** : ArcGIS-safe uppercase column name ≤ 30 chars
+        - **prompt** : original column name (shown in AutoCAD attribute dialog)
+        - **value** : string value from *row_data*
+    """
+    from metadata_utils import tag_from_column
+
+    result: list[tuple[str, str, str]] = []
+    for col in selected_columns:
+        tag = tag_from_column(col)
+        prompt = col.strip()
+        value = str(row_data.get(col, ""))
+        result.append((tag, prompt, value))
+    return result
 
 
 def build_output_path(original_path: str) -> str:
