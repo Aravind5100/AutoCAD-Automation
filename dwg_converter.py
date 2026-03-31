@@ -61,6 +61,8 @@ def dwg_to_dxf(
             f"Detail: {exc}"
         ) from exc
 
+    _prepare_acad(acad, log_fn)
+
     doc = None
     opened_by_us = False
 
@@ -128,6 +130,8 @@ def dxf_doc_to_dwg(
             "Please ensure AutoCAD is running.\n"
             f"Detail: {exc}"
         ) from exc
+
+    _prepare_acad(acad, log_fn)
 
     doc = None
     opened_by_us = False
@@ -201,6 +205,8 @@ def dxf_to_dwg(
             f"Detail: {exc}"
         ) from exc
 
+    _prepare_acad(acad, log_fn)
+
     try:
         _log(log_fn, f"  Opening DXF: {os.path.basename(abs_path)}")
         doc = acad.Documents.Open(abs_path, False)
@@ -225,6 +231,27 @@ def dxf_to_dwg(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _prepare_acad(acad, log_fn=None) -> None:
+    """Make AutoCAD visible and suppress dialogs that cause COM to hang."""
+    try:
+        acad.Visible = True
+        _log(log_fn, "  AutoCAD is visible.")
+    except Exception:
+        pass
+
+    try:
+        # FILEDIA=0 suppresses file-related dialog boxes
+        doc = acad.ActiveDocument
+        if doc is not None:
+            doc.SetVariable("FILEDIA", 0)
+            doc.SetVariable("CMDDIA", 0)
+            # Suppress proxy graphics warning
+            doc.SetVariable("PROXYNOTICE", 0)
+            _log(log_fn, "  Suppressed AutoCAD dialogs (FILEDIA=0, PROXYNOTICE=0).")
+    except Exception:
+        pass
+
 
 def _find_open_document(acad, dwg_path: str):
     """Return the Document COM object if already open, else None."""
