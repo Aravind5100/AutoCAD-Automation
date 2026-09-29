@@ -40,19 +40,10 @@ env/
 
 # Build artifacts
 build_temp/
-build_exe.spec
 
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
-
-# Dev-only scripts
-package_zip.py
-
-# Stale docs (superseded by README.md)
-DOCUMENTATION.md
-GITHUB_SETUP.md
-PUSH_TO_GITHUB.md
 
 # Project-specific
 *.dwg
@@ -60,13 +51,6 @@ PUSH_TO_GITHUB.md
 *.tmp
 *.dxf
 sample_data.csv
-create_sample_dwg.py
-debug_run.py
-debug_polys.py
-debug_saveas.py
-debug_scan.py
-debug_scan2.py
-test_import.py
-test_import.bat
-test_full_pipeline.py
-run_debug.bat
+
+# Distribution packages
+AutoCAD_Room_Annotator_*.zip
