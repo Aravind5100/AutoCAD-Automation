@@ -122,9 +122,12 @@ This contains all the Python dependencies. Do not delete this folder.
 
 ### Every Time You Want to Use It:
 
-1. **Open AutoCAD** and load your DWG drawing.
+1. **Open AutoCAD** (needed for DWG files; DXF files work without it).
 2. **Double-click `run.bat`**
-3. The application window will appear.
+3. The **Room Layer Tool** window appears (light theme; switch with the ☾ Dark / ☀ Light
+   button, top right — your choice is remembered).
+
+> The previous Tkinter window is still available: `.venv\Scripts\python.exe main.py --tk`
 
 ### If run.bat Shows a Warning About AutoCAD
 
@@ -140,50 +143,54 @@ Open AutoCAD first, then press any key in the terminal to continue.
 
 ## Step-by-Step Usage Guide
 
-### 1. Select Your Spreadsheet
+### 1. Files
 
-Large Excel files take a while the first time (a 36,000-row workbook ≈ 15–25 s); the
-window stays usable while it loads. After that, the same unchanged file loads instantly.
+- **Spreadsheet → Browse…** — CSV, XLS or XLSX with a room-number column. Large Excel files
+  take a while the first time (a 36,000-row workbook ≈ 15–25 s); the window stays usable and
+  shows `✓ 36,367 rows` when done. The same unchanged file then loads instantly.
+- **Drawing (DWG / DXF) → Browse…** — the floor plan.
+- **Building ID** — filled in from the first 4 characters of the drawing's file name
+  (`0132_SATELLITE DISH LAB ANNEX_01.dwg` → `0132`). **Edit it** if the file name is different.
 
-Click **"Browse"** next to the spreadsheet field and select your file:
-- Supported formats: **CSV**, **XLS**, **XLSX**
-- The spreadsheet must contain a column with room numbers (e.g., `1000`, `1001`, `102A`)
+### 2. Columns
 
-### 2. Select Your DWG File
+The **Room**, **Building** and **Floor** columns are detected automatically (e.g. "Room
+Identifier", "Building Identifier", "Floor Code"); change them in the drop-downs if needed.
+They must be three different columns. The green preview shows a real layer name for the
+building you are processing, e.g. `e.g.  0036-1-001`.
 
-Click **"Browse"** next to the drawing field and select your `.dwg` file.
-- The building ID is automatically extracted from the **first 4 characters** of the filename.
-- Example: `0132_SATELLITE DISH LAB ANNEX_01.dwg` → Building ID = `0132`
+### 3. Create Room Layers
 
-### 3. Choose Column Mappings
+**Create Room Layers** is enabled once everything above is set (hover over it to see what is
+missing). Click it and choose **where to save** the result (suggested name
+`<original_name>_annotated.dwg`, starting in your Documents folder — the original drawing
+cannot be chosen).
 
-The application will auto-detect three columns (change them in the drop-downs if needed):
-- **Room Identifier** — room numbers (e.g., "Room ID", "Room Number")
-- **Building Column** — building codes (e.g., "Building ID", "Bldg")
-- **Floor Column** — floor codes (e.g., "Floor", "Floor Code", "Flr", "Level")
+The progress bar and status line follow each step:
+1. Filter the spreadsheet to the Building ID (a wrong ID stops here, before AutoCAD is used)
+2. Convert DWG to DXF (AutoCAD, on a temporary copy)
+3. Scan the drawing for room labels and room outlines
+4. Link each label to its room outline
+5. Match rooms to the spreadsheet
+6. Copy each matched room's outline onto its `Building-Floor-Room` layer and write the key
+   as a text label inside the room
+7. Convert back to DWG and save it where you chose
 
-The three must be different columns.
+**Cancel** stops the run after the current step; nothing is saved.
 
-### 4. Check the Layer Name
+### 4. Results
 
-Each matched room is written to a layer named **`[Building]-[Floor]-[Room]`**, using the
-values exactly as they appear in the spreadsheet. Below the drop-downs, the app shows the
-name the first spreadsheet row would get (e.g. `First row -> 0132-01-101`).
+The **Results** tab lists every room, with a filter (**Show**) and a summary line:
 
-### 5. Click "Run Annotation"
+| Status | Meaning |
+|---|---|
+| ✓ Created | Layer and key label written |
+| ⚠ Check | Created, but worth a look — e.g. the key label does not fit inside a very small room, the label was linked to the nearest outline, or two labels share one outline |
+| – Skipped / ✗ Failed | No layer written; the Note says why (no outline found, empty Floor value, already done…) |
+| ○ Not in spreadsheet | A room label in the drawing has no spreadsheet row (e.g. `ELECT1` vs `ELEC1`) |
+| ○ Not in drawing | A spreadsheet row for this building has no label in this drawing (often another floor) |
 
-You will be asked **where to save** the annotated drawing (suggested name:
-`<original_name>_annotated.dwg`, starting in your Documents folder).
-The original drawing cannot be chosen as the target.
-
-The tool will then:
-1. Convert DWG to DXF (temporarily, using AutoCAD)
-2. Scan the drawing for room texts and room boundary polygons
-3. Match room texts to polygons (point-in-polygon test)
-4. Match rooms to spreadsheet data
-5. Copy each matched room's boundary polygon onto its `Building-Floor-Room` layer and
-   write the key as a text label under the room number
-6. Convert back to DWG and save it to the location you chose
+The **Log** tab has the full step-by-step log.
 
 ### 6. Check the Output
 

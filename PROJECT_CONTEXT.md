@@ -61,7 +61,7 @@ get a drawing whose room polygons carry a `Building-Floor-Room` key (as their la
 | Layer | Technology | Version in `.venv` [verified] | Why |
 |---|---|---|---|
 | Language | Python | 3.13.14 (README says 3.10+; code uses `X \| Y` types) | Fast to build; good CAD and data libraries |
-| GUI | Tkinter / ttk (`clam` theme, custom dark palette) | stdlib | No extra dependency; ships with Python |
+| GUI | **Branch `ui-pyside6`: PySide6 (Qt 6)** — `qt_ui.py`, light/dark QSS themes. Stable branch `dev_exe`: Tkinter / ttk (`ui.py`, still here via `main.py --tk`) | PySide6-Essentials 6.11.2 (77 MB wheel) | Owner decision 2026-09-30: desktop tool for 1–2 users; Qt for a proper results table and modern look (FastAPI+React rejected — adds a server, Node build and upload/download for no desktop benefit) |
 | Spreadsheets | pandas + openpyxl (xlsx) + xlrd (xls) | pandas **3.0.1**, openpyxl 3.1.5, xlrd 2.0.2 | Standard |
 | DXF read/write | **ezdxf** | 1.4.3 | Pure-Python, fast, no AutoCAD needed for entity work |
 | DWG ↔ DXF | AutoCAD COM automation via **pywin32** (`win32com.client`, `pythoncom`) | pywin32 311 | DWG is a closed format; AutoCAD is the reliable converter |
@@ -118,7 +118,9 @@ Phase 6 │ summary to log + messagebox
 
 | File | Responsibility | Notes |
 |---|---|---|
-| `main.py` | Entry point; DPI awareness; centre window | |
+| `main.py` | Entry point: Qt window (`qt_ui.main`); `--tk` starts the Tkinter window | |
+| `qt_ui.py` | PySide6 `MainWindow`: Files (editable Building ID), Columns (+ preview for the chosen building), Create Room Layers / Cancel, step progress, Results table (filterable: created / needs check / skipped / not matched) and Log tabs, light/dark toggle; `SheetLoader` and `RunWorker` QThreads; QSettings (`RoomAnnotator/RoomLayerTool`) remembers theme and folders | Widgets touched only on the GUI thread (signals). Pure helpers `check_output_path`, `default_output_dir`, `status_label`, `row_matches_filter` |
+| `pipeline.py` | UI-independent run: `run(RunRequest, log, step, is_cancelled) -> RunResult` with one `ResultRow` per room; filters by building **before** AutoCAD; raises `RunStopped` / `RunCancelled` | Used by `qt_ui.py` (Tk `ui.py` keeps its own copy of the flow) |
 | `ui.py` | `AppUI`: 4-step GUI (Room / Building / Floor drop-downs + live key preview), validation, Save As prompt, worker thread, pipeline orchestration | All Tk calls from the worker go through `root.after` (`_dialog`, `_log`, `_set_status`) |
 | `config.py` | Every tunable constant | Some constants are dead (see §8) |
 | `spreadsheet_loader.py` | `load_spreadsheet` (dtype=str, keep_default_na=False), `_clean_dataframe`, room-ID column guess, optional pickle cache (`use_cache=True`, keyed by path+size+mtime+header rows, in `SPREADSHEET_CACHE_DIR`) | Excel header row = **3rd row** by default. The UI loads on a worker thread with the cache on; pandas/openpyxl/ezdxf are preloaded in the background at start-up |
@@ -126,10 +128,10 @@ Phase 6 │ summary to log + messagebox
 | `dwg_converter.py` | AutoCAD COM conversion only: `dwg_to_dxf`, `dxf_doc_to_dwg`, `make_work_dir`/`remove_work_dir`, `_acad_session`, `_call` | |
 | `autocad_scanner.py` | ezdxf single-pass scan → `RoomText`, `RoomPolygon`, `ScanResult` dataclasses | `AutoCADError` name kept from COM era |
 | `polygon_matcher.py` | `TextPolygonAssociation`, `RoomMatch`, `MatchSummary`; spatial association + sheet matching | O(texts × polygons) — fine for floor plans |
-| `annotation_writer.py` | `write_room_layers`: room polygon copies on `Building-Floor-Room` layers + XData | Returns the in-memory `Drawing` |
+| `annotation_writer.py` | `write_room_layers`: room polygon copies + key TEXT on `Building-Floor-Room` layers + XData; optional `outcomes` list gets a `RoomOutcome` per matched room | Returns the in-memory `Drawing` |
 | `metadata_utils.py` | `AnnotationMetadata` (type `room_layer`), XData write/read | |
 | `setup.bat` / `run.bat` | End-user setup (venv + pip) and launch (warns if `acad.exe` not running) | |
-| `tests/` + `run_tests.bat` | unittest suite (63 tests): utils, metadata, spreadsheet, scanner, matcher, pipeline, converter (fake COM), UI (scripted dialogs); `test_acad_integration.py` runs only with `RUN_ACAD_TESTS=1` / `run_tests.bat acad` | Known open issues B10/B11 are `expectedFailure` tests — they start "unexpectedly passing" when fixed |
+| `tests/` + `run_tests.bat` | unittest suite (83 tests; Qt tests run off-screen and skip without PySide6): utils, metadata, spreadsheet, scanner, matcher, pipeline, converter (fake COM), UI (scripted dialogs); `test_acad_integration.py` runs only with `RUN_ACAD_TESTS=1` / `run_tests.bat acad` | Known open issues B10/B11 are `expectedFailure` tests — they start "unexpectedly passing" when fixed |
 | `build_exe.spec` | PyInstaller one-folder GUI build | Committed in 7f31ea3; exe vs ZIP still undecided |
 
 ### 4.3 What gets written into the drawing (output contract)
@@ -162,6 +164,7 @@ final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed a
 | Sep 29 | group 4 | `tests/` unittest suite + `run_tests.bat` (B17): 56 offline tests + 2 opt-in real-AutoCAD tests, all passing. |
 | Sep 29 | D14 room layers | Blocks replaced by one `Building-Floor-Room` layer per room (polygon copy + XData); Floor column in GUI with live key preview; dedup via XData on copies; README rewritten for the ArcGIS layer workflow. 63 offline + 2 AutoCAD tests pass. |
 | Sep 29 | real-data fixes | First real run (0036, Room_Data.xlsx 36k rows): only 3/62 rooms matched because labels are two-line MTEXT (number over area) → use the room-ID line (now 62/62). Visible key TEXT added on each room layer, placed inside the room (58/62 fully inside; 3 narrow shafts/stair can't fit). Spreadsheet: 13–25 s parse → background load + cache (0.1–0.2 s when unchanged). Writer reuses the scanner's drawing. Typical run ≈ 12 s (AutoCAD ≈ 4 s per conversion; first open after idle ≈ 19 s). |
+| Sep 30 | `ui-pyside6` branch | PySide6 window (`qt_ui.py`) + UI-independent `pipeline.py` + per-room outcomes in the writer. Verified off-screen on the real 0036 drawing: 62 layers, 81 result rows, ≈10–15 s. 83 tests pass. |
 
 Branch note: there is **no `main` branch** — local branches are `master`, `dev_mtext`, `dev_exe`; remote default is `dev_mtext`.
 
@@ -180,6 +183,7 @@ Branch note: there is **no `main` branch** — local branches are `master`, `dev
 | D7 | ~~Convert through **R12 DXF**~~ → **2018 DXF / native DWG** since 2026-09-29 (`ACAD_DXF_FORMAT = 65`, `ACAD_DWG_FORMAT = 64`) | R12 was [inferred] chosen for easy scanning but degraded the whole drawing (B3). MTEXT is now read with ezdxf `MText.plain_text()` | code |
 | D13 | User chooses the **output location** (Save As dialog, starts in Documents, remembers last folder, refuses the input file) | Owner decision 2026-09-29: don't save next to the original by default | code |
 | D14 | **Room layers instead of blocks** (2026-09-29): each matched room's polygon copied onto a layer named `Building-Floor-Room`; values as-is from the spreadsheet row; Floor from a spreadsheet column; copy (not move) the polygon; unmatched rooms skipped; no blocks/attributes | Owner decision: ArcGIS works better with layers than blocks on CAD import; the key is joined to the facilities table in ArcGIS | owner |
+| D15 | **PySide6 desktop UI on branch `ui-pyside6`**; `dev_exe` stays the stable Tkinter version (2026-09-30) | Owner: keep the current version stable, try Qt on a branch. Features chosen: per-room results table, editable Building ID, Cancel, light/dark toggle + bigger fonts (after-run buttons not chosen) | owner |
 | D8 | Distribute as **ZIP + setup.bat/run.bat**, not a PyInstaller exe | [inferred] exe build of pywin32/pandas is large and brittle and trips antivirus; ZIP + venv is transparent. d00322d: "replaced by ZIP distribution". Branch `dev_exe` + re-added spec suggests this is still open | history |
 | D9 | Suppress AutoCAD dialogs (FILEDIA/CMDDIA/PROXYNOTICE = 0) | Modal dialogs block COM calls forever ("hangs at Converting DWG → DXF") | history (d00322d, README troubleshooting) |
 | D10 | Single-pass scan into plain dataclasses; no live entity references after scan | Performance and separation (matcher/writer never touch the CAD layer) | history |
@@ -284,6 +288,7 @@ in `tearDown` that AutoCAD's sysvars and open drawings are unchanged.
 - AutoCAD busy: calls fail with `RPC_E_CALL_REJECTED`, **or** — when pywin32 must look a member up by name — with `AttributeError: AutoCAD.Application.<member>`. Wrap every COM call in `dwg_converter._call`. AutoCAD is busiest right after a drawing is closed (returning to the Start tab).
 - System variables need an open drawing; with none open, `ActiveDocument` raises "Failed to get the Document object".
 - Performance facts (this machine): cold first import of pandas/openpyxl can take 10–14 s (disk/AV); Room_Data.xlsx (4.6 MB, 36k×30) parses in 13–25 s; AutoCAD Documents.Open ≈ 3–4 s warm, ≈ 19 s first time after idle; a COM call blocks indefinitely while AutoCAD shows a modal dialog or is mid-command (seen once: 520 s).
+- Qt off-screen rendering (`QT_QPA_PLATFORM=offscreen`) needs `QT_QPA_FONTDIR=C:/Windows/Fonts` for readable screenshots; modal `QMessageBox` calls block scripted runs — patch them in tests.
 - Shell quirk seen on this machine: running test scripts from Git Bash `$TMP` (`/tmp/...`) hung at start-up; run them by Windows path (e.g. the session scratchpad) instead.
 - AutoCAD `AcSaveAsType`: 1 = R12 DXF, 12/13 = 2000 DWG/DXF, 24/25 = 2004, 36/37 = 2007, 48/49 = 2010, 60/61 = 2013, 64/65 = 2018; `acNative` = 64.
 - COM from a thread needs `pythoncom.CoInitialize()` / `CoUninitialize()` (already done in `_run_annotation`).

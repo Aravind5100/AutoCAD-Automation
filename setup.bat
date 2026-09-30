@@ -82,7 +82,7 @@ if %ERRORLEVEL% NEQ 0 (
 REM ------ Verify installation ------
 echo.
 echo [4/4] Verifying installation...
-.venv\Scripts\python.exe -c "import pandas; import ezdxf; import win32com.client; print('  All dependencies verified successfully.')"
+.venv\Scripts\python.exe -c "import pandas; import ezdxf; import win32com.client; import PySide6.QtWidgets; print('  All dependencies verified successfully.')"
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo  WARNING: Some dependencies may not have installed correctly.
