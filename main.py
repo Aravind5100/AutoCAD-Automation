@@ -43,6 +43,9 @@ def main_tk():
 
 
 def main():
+    if sys.argv[1:2] == ["--selftest"]:
+        from selftest import main as selftest
+        sys.exit(selftest(sys.argv[2:]))
     if "--tk" in sys.argv[1:]:
         main_tk()
         return

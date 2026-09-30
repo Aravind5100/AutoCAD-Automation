@@ -57,3 +57,6 @@ AutoCAD_Room_Annotator_*.zip
 
 # Office lock files
 ~$*
+
+# Standalone app build output
+Room_Layer_Tool_*.zip

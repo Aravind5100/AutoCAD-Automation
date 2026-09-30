@@ -1,21 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for AutoCAD Room Annotation Tool.
-Builds a single-folder distributable with all dependencies bundled.
+PyInstaller spec for the Room Layer Tool (PySide6 window).
+
+Build:   .venv\\Scripts\\python.exe -m PyInstaller build_exe.spec --noconfirm
+Output:  dist\\Room Layer Tool\\Room Layer Tool.exe   (one folder, no Python needed)
+Check:   "dist\\Room Layer Tool\\Room Layer Tool.exe" --selftest report.txt
 """
 
-import sys
-import os
-
-block_cipher = None
+from PyInstaller.utils.hooks import collect_data_files
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # ezdxf ships font metrics used to measure text (room label extents)
+    datas=collect_data_files('ezdxf'),
     hiddenimports=[
-        # Project modules (some are imported dynamically in ui.py)
+        # Project modules (several are imported lazily inside functions)
+        'qt_ui',
+        'pipeline',
+        'selftest',
         'autocad_scanner',
         'annotation_writer',
         'dwg_converter',
@@ -24,46 +28,41 @@ a = Analysis(
         'spreadsheet_loader',
         'config',
         'utils',
-        'ui',
         # Dependencies
         'pandas',
         'openpyxl',
         'xlrd',
         'ezdxf',
         'pythoncom',
+        'pywintypes',
         'win32com',
         'win32com.client',
-        'pywintypes',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'matplotlib',
-        'scipy',
-        'numpy.tests',
-        'pytest',
-        'IPython',
-        'jupyter',
+        'tkinter', 'ui',            # the old Tkinter window is not shipped
+        'matplotlib', 'scipy', 'numpy.tests', 'pytest', 'IPython', 'jupyter',
+        'tests',
     ],
     noarchive=False,
     optimize=0,
-    cipher=block_cipher,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name='AutoCAD Room Annotator',
+    name='Room Layer Tool',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    console=False,  # No console window — GUI only
+    upx=False,                      # UPX can corrupt Qt DLLs
+    console=False,                  # GUI only
     disable_windowed_traceback=False,
     argv_emulation=False,
     icon=None,
@@ -74,7 +73,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    name='AutoCAD Room Annotator',
+    name='Room Layer Tool',
 )
