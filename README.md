@@ -464,12 +464,30 @@ AutoCAD-Annotator/
   metadata_utils.py         # XData read/write for annotation metadata
   spreadsheet_loader.py     # CSV / XLS / XLSX file loading
   utils.py                  # Normalization, heuristics, geometry helpers
-  matcher.py                # Legacy matching utilities
-  autocad_handler.py        # Legacy AutoCAD COM handler (unused in current version)
-  file_loader.py            # File type detection and loading
   requirements.txt          # Python package dependencies
+  run_tests.bat             # Runs the automated tests
+  tests/                    # Automated tests (unittest)
   README.md                 # This file
 ```
+
+### Running the Tests
+
+After `setup.bat`, double-click **`run_tests.bat`** (or run it from a command prompt).
+It runs the offline tests, which need no AutoCAD and take a few seconds:
+
+```
+run_tests.bat
+```
+
+To also test the real AutoCAD conversion (AutoCAD must be installed; it works on
+temporary test drawings only and restores AutoCAD's settings afterwards):
+
+```
+run_tests.bat acad
+```
+
+A result ending in `OK` means everything passed. "Expected failures" are tests for
+known, not-yet-fixed limitations; they are reported but do not fail the run.
 
 ---
 

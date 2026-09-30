@@ -119,6 +119,7 @@ Phase 6 │ summary to log + messagebox
 | `annotation_writer.py` | Blocks, attribs, outlines, XData via ezdxf | Returns an in-memory `Drawing`, **not** a path (docstring is stale) |
 | `metadata_utils.py` | `AnnotationMetadata`, XData write/read, ArcGIS-safe `normalize_block_name` / `tag_from_column` | |
 | `setup.bat` / `run.bat` | End-user setup (venv + pip) and launch (warns if `acad.exe` not running) | |
+| `tests/` + `run_tests.bat` | unittest suite (56 tests): utils, metadata, spreadsheet, scanner, matcher, pipeline, converter (fake COM), UI (scripted dialogs); `test_acad_integration.py` runs only with `RUN_ACAD_TESTS=1` / `run_tests.bat acad` | Known open issues B10/B11/B12 are `expectedFailure` tests — they start "unexpectedly passing" when fixed |
 | `build_exe.spec` | PyInstaller one-folder GUI build | Untracked in working tree (re-added after being deleted in d00322d) |
 
 ### 4.3 What gets written into the drawing (output contract)
@@ -148,6 +149,7 @@ final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed a
 | Sep 29 | `7f31ea3`, `41957a8` | Legacy v0 files removed, `build_exe.spec` restored, `.gitignore` trimmed; PROJECT_CONTEXT.md, CLAUDE.md and the learning report added. |
 | Sep 29 | group-1 fix | 2018 DXF/DWG conversion (B1, B3), MTEXT via `plain_text()` + `char_height` fix (B8), 2D-only POLYLINE filter, user-chosen output location (D13). |
 | Sep 29 | groups 2+3 | Dedup fixed (B2) and outline copies ignored on re-scan; pandas-3-safe cleaning (B5); private work dir + copy-before-convert (B4, B9); sysvars saved/restored with anchor drawing (B7, B19); busy-call retry `_call` (B18); dialogs marshalled to Tk main thread (B6); writer returns a Drawing (B13). Verified offline, with fake COM, and against AutoCAD 2023. |
+| Sep 29 | group 4 | `tests/` unittest suite + `run_tests.bat` (B17): 56 offline tests + 2 opt-in real-AutoCAD tests, all passing. |
 
 Branch note: there is **no `main` branch** — local branches are `master`, `dev_mtext`, `dev_exe`; remote default is `dev_mtext`.
 
@@ -211,7 +213,7 @@ Severity: 🔴 wrong output / data loss · 🟠 incorrect behaviour · 🟡 robu
 | **B14** | 🟡 | Nearest fallback uses centroid distance in raw drawing units (500 means very different things in mm vs inches); L-shaped rooms have centroids outside the room. | [verified] L-shape test | Distance to polygon edge; unit-aware threshold. |
 | **B15** | 🟡 | Dead code/config left from the COM/MTEXT era (partly cleaned 2026-09-29: `dxf_to_dwg`, `_prepare_acad`, `_build_dxf_output_path`, `strip_mtext_formatting`, `Vec3`/`time` imports removed; `read_xdata` now used). Still left: `format_mtext_content`, `build_output_path`, `has_app_xdata`, `find_column`, `build_col_map`; constants `OUTPUT_LAYER` (still used only for legacy MTEXT dedup), `MTEXT_WIDTH_FACTOR`, `VERTICAL_SPACING_MULTIPLIER`, `DXF_VERSION`, `ARCGIS_SAFE_LAYER`; unused imports (`time`, `Vec3`, `build_output_path`). | [verified] grep | Remove after fixing B2. |
 | **B16** | 🟡 | README drift: still lists the deleted legacy files; claims no intermediate DXF (B4); ArcGIS example table shows `ROOM_ID`/`BUILDING` fields that only exist if the user ticks those columns (building ID lives in XData, not attributes). | [verified] | Update README. |
-| **B17** | 🟡 | No automated tests; no sample data in repo. | [verified] | See §10.3 for an offline test recipe. |
+| **B17** ✅ fixed 2026-09-29 | 🟡 | No automated tests; no sample data in repo. | [verified] | See §10.3 for an offline test recipe. |
 | **B18** ✅ fixed 2026-09-29 | 🟠 | When AutoCAD is busy, COM calls fail with `RPC_E_CALL_REJECTED` ("Call was rejected by callee"). `dwg_converter` wraps `doc.Close` / `SetVariable` in `except: pass`, so a rejected `Close` silently **leaves the converted drawing open** in AutoCAD. | [verified 2026-09-29] AutoCAD 2023 test left `<name>.dxf` open | Retry on `RPC_E_CALL_REJECTED` (small retry helper or a COM message filter) and log failures. |
 | **B19** ✅ fixed 2026-09-29 | 🟡 | `_prepare_acad` needs an open drawing (`ActiveDocument`) to set FILEDIA/CMDDIA/PROXYNOTICE. When AutoCAD sits on the Start tab with no drawing open, suppression is **silently skipped** for the DWG → DXF step. | [verified 2026-09-29] `Documents.Count == 0` → "Failed to get the Document object" | Set sysvars after opening the drawing, and restore them afterwards (see B7). |
 
@@ -254,19 +256,15 @@ DWG input requires AutoCAD installed (COM `AutoCAD.Application`); DXF input need
 - UI work on the worker thread must go through `self.root.after(0, ...)`.
 - `.gitattributes`: `.py/.md/.txt` = LF, `.bat` = CRLF, `.dwg` binary. `*.dwg`, `*.dxf`, the ZIP are gitignored — never commit drawings.
 
-### 10.3 Offline test recipe (no AutoCAD)
-Build a synthetic drawing with ezdxf and push it through the real pipeline functions:
-```python
-import ezdxf
-doc = ezdxf.new("R12"); msp = doc.modelspace()            # R12 mimics AutoCAD's SaveAs(acR12_dxf)
-msp.add_polyline2d([(0,0),(100,0),(100,100),(0,100)], close=True)
-msp.add_polyline2d([(-10,-10),(300,-10),(300,300),(-10,300)], close=True)   # floor outline
-msp.add_text("101", dxfattribs={"insert": (50, 50), "height": 5})
-doc.saveas("0132_TEST.dxf")
-# then: load_spreadsheet → filter_dataframe_by_building → scan_drawing →
-#       associate_texts_with_polygons → match_rooms → write_annotations → doc.saveas(...)
+### 10.3 Tests
+```bash
+.venv/Scripts/python.exe -W ignore::DeprecationWarning -m unittest discover -s tests -t .   # offline, ~10 s
+RUN_ACAD_TESTS=1 .venv/Scripts/python.exe -m unittest tests.test_acad_integration          # real AutoCAD, ~1 min
 ```
-Expected today: 101 → "contains" (area 10000, not the floor outline); INSERT `ROOM_BLOCK_101` on `ROOM_DATA` with XData. Rescanning the output shows the B2 dedup failure.
+(Windows: `run_tests.bat` / `run_tests.bat acad`.) `tests/helpers.py` has `make_plan()` (synthetic 3-room plan in a
+floor outline, R2018 or R12) and `run_pipeline()` (the same stage sequence as `AppUI._run_annotation`). Add a test for
+every behaviour change; turn an `expectedFailure` into a normal test when fixing its issue. The integration tests assert
+in `tearDown` that AutoCAD's sysvars and open drawings are unchanged.
 
 ### 10.4 Gotchas
 - ezdxf: `entity.xdata` is an `XData` object (not iterable); use `entity.get_xdata(app)` / `has_xdata(app)` (or `metadata_utils.read_xdata`). R12 docs reject LWPOLYLINE and MTEXT (`DXFVersionError`). `Insert.attribs` is a list — use `get_attrib(tag)`.
