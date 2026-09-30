@@ -268,11 +268,18 @@ The spreadsheet is filtered to only rows matching this building ID before matchi
 |---|---|
 | `<name>_annotated.dwg` (name and folder are your choice) | The annotated drawing with all block inserts, saved as a native AutoCAD 2018 DWG. |
 
-The original DWG is **never modified**.
+The original DWG is **never modified**, and nothing is written next to it:
 
-> **Note:** the DWG -> DXF conversion currently leaves a `<name>.dxf` next to the
-> original drawing (and overwrites an existing file of that name). This is a known
-> issue and will be fixed; move or delete that file if you don't need it.
+- Conversion works on a **copy** of the drawing in a private temporary folder,
+  which is deleted when the run ends.
+- If the drawing is **open in AutoCAD**, it is left untouched. If it has unsaved
+  changes, the log warns you that the last **saved** version was used — save first
+  if you want those changes included.
+- AutoCAD's dialog settings (FILEDIA, CMDDIA, PROXYNOTICE) are switched off only
+  while converting and **restored** afterwards.
+
+**Running again is safe:** rooms that already have an annotation in the drawing
+are skipped (the log reports how many).
 
 ---
 

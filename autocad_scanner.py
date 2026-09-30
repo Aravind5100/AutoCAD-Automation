@@ -21,11 +21,13 @@ import ezdxf
 
 from config import (
     BLOCK_LAYER,
+    BLOCK_OUTLINE_LAYER,
     DEFAULT_TEXT_HEIGHT,
     OUTPUT_LAYER,
     SCAN_PROGRESS_INTERVAL,
     XDATA_APP_NAME,
 )
+from metadata_utils import read_xdata
 from utils import (
     is_room_identifier,
     is_valid_room_polygon,
@@ -81,6 +83,7 @@ class ScanResult:
     polygons: list[RoomPolygon] = field(default_factory=list)
     total_entities: int = 0
     existing_annotation_room_ids: set[str] = field(default_factory=set)
+    unreadable_entities: int = 0    # TEXT/MTEXT/polylines that raised while reading
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +149,9 @@ def scan_drawing(
     _log(log_fn, f"  Polygon candidates     : {len(result.polygons)}")
     if result.existing_annotation_room_ids:
         _log(log_fn, f"  Existing annotations   : {len(result.existing_annotation_room_ids)}")
+    if result.unreadable_entities:
+        _log(log_fn, f"  WARNING: {result.unreadable_entities} text/polyline entities "
+                     "could not be read and were skipped")
 
     return result
 
@@ -165,6 +171,7 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
         else:
             text_val = str(entity.dxf.text).strip()
     except Exception:
+        result.unreadable_entities += 1
         return
 
     layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
@@ -222,6 +229,12 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
         if etype == "POLYLINE" and not entity.is_2d_polyline:
             return
     except Exception:
+        result.unreadable_entities += 1
+        return
+
+    layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
+    # Outline copies written by a previous run are not room boundaries
+    if layer == BLOCK_OUTLINE_LAYER:
         return
 
     if not closed:
@@ -235,9 +248,9 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
             vertices = [(float(v.dxf.location.x), float(v.dxf.location.y))
                         for v in entity.vertices]
     except Exception:
+        result.unreadable_entities += 1
         return
 
-    layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
     handle = entity.dxf.handle if entity.dxf.hasattr("handle") else ""
 
     if not is_valid_room_polygon(vertices, closed):
@@ -260,51 +273,30 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
 
 
 def _record_existing_annotation(entity, result: ScanResult) -> None:
-    """Check if an MTEXT on OUTPUT_LAYER has our XData and record its room_id."""
-    try:
-        if entity.xdata is not None:
-            for appid, tags in entity.xdata:
-                if appid == XDATA_APP_NAME and len(tags) >= 2:
-                    room_id = str(tags[1].value).strip().lower()
-                    if room_id:
-                        result.existing_annotation_room_ids.add(room_id)
-                    return
-    except Exception:
-        pass
+    """Record the room_id of an entity carrying our XData (a previous annotation)."""
+    meta = read_xdata(entity)
+    if meta is not None:
+        room_id = normalize_room_id(meta.room_id)
+        if room_id:
+            result.existing_annotation_room_ids.add(room_id)
 
 
 def _process_block_dedup(entity, result: ScanResult) -> None:
     """Check if a block INSERT on BLOCK_LAYER is an existing annotation (dedup)."""
-    try:
-        layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
-    except Exception:
-        return
-
+    layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
     if layer != BLOCK_LAYER:
         return
 
-    # Try XData first
-    try:
-        if entity.xdata is not None:
-            for appid, tags in entity.xdata:
-                if appid == XDATA_APP_NAME and len(tags) >= 2:
-                    room_id = str(tags[1].value).strip().lower()
-                    if room_id:
-                        result.existing_annotation_room_ids.add(room_id)
-                    return
-    except Exception:
-        pass
+    if read_xdata(entity) is not None:
+        _record_existing_annotation(entity, result)
+        return
 
-    # Fallback: check attributes for a ROOM_IDENTIFIER tag
-    try:
-        if entity.has_attrib("ROOM_IDENTIFIER"):
-            attrib = entity.attribs.get("ROOM_IDENTIFIER")
-            if attrib is not None:
-                rid = normalize_room_id(attrib.dxf.text)
-                if rid:
-                    result.existing_annotation_room_ids.add(rid)
-    except Exception:
-        pass
+    # Fallback (XData stripped by another tool): a ROOM_IDENTIFIER attribute
+    attrib = entity.get_attrib("ROOM_IDENTIFIER")
+    if attrib is not None:
+        rid = normalize_room_id(attrib.dxf.text)
+        if rid:
+            result.existing_annotation_room_ids.add(rid)
 
 
 # ---------------------------------------------------------------------------

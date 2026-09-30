@@ -62,6 +62,7 @@ ARCGIS_SAFE_LAYER: str = "ROOM_DATA"         # ArcGIS-safe layer name
 #   1 = R12 DXF (lossy — do not use), 64 = 2018 DWG (= acNative), 65 = 2018 DXF
 ACAD_DXF_FORMAT: int = 65                # DWG -> DXF: 2018 DXF keeps the full drawing
 ACAD_DWG_FORMAT: int = 64                # DXF -> DWG: native 2018 DWG
+COM_RETRY_SECONDS: float = 60.0          # keep retrying calls AutoCAD rejects while busy
 
 # ---------------------------------------------------------------------------
 # Output

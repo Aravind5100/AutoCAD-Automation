@@ -98,13 +98,19 @@ def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Strip column name whitespace
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Strip whitespace from string cells
+    # Strip whitespace from string cells. Checked per value, not per column
+    # dtype: pandas 3 reads dtype=str as the "str" dtype, not object.
+    df = df.copy()
     for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].map(lambda v: v.strip() if isinstance(v, str) else v)
+        df[col] = df[col].map(lambda v: v.strip() if isinstance(v, str) else v)
 
-    # Drop fully empty rows
-    df.dropna(how="all", inplace=True)
+    # Drop fully empty rows (keep_default_na=False makes blanks "" rather than NaN)
+    def _is_blank(v) -> bool:
+        return v is None or (isinstance(v, str) and v == "") or pd.isna(v)
+
+    if len(df.columns):
+        blank_rows = pd.concat([df[c].map(_is_blank) for c in df.columns], axis=1).all(axis=1)
+        df = df.loc[~blank_rows]
 
     return df.reset_index(drop=True)
 

@@ -8,98 +8,123 @@ This module uses AutoCAD's COM interface solely for file format conversion:
   - DXF -> DWG  (so the final output is a standard DWG)
 
 All entity scanning and annotation writing is handled by ezdxf, not COM.
+
+Side-effect rules
+~~~~~~~~~~~~~~~~~
+- Intermediate files live in a private work folder (``make_work_dir``),
+  never next to the input drawing.
+- The user's open drawings are never saved or re-pointed: a *copy* of the
+  input DWG is opened and converted.
+- Dialog-suppressing system variables are restored when conversion ends.
+- Calls AutoCAD rejects while busy are retried; anything that still fails
+  is logged instead of silently ignored.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import time
+from contextlib import contextmanager
 from typing import Callable
 
-import pythoncom
+import pywintypes
 import win32com.client
 
-from config import ACAD_DWG_FORMAT, ACAD_DXF_FORMAT
+from config import ACAD_DWG_FORMAT, ACAD_DXF_FORMAT, COM_RETRY_SECONDS
+
+# HRESULTs AutoCAD returns while it is busy; the call should be retried
+_BUSY_HRESULTS = {
+    -2147418111,    # RPC_E_CALL_REJECTED ("Call was rejected by callee")
+    -2147417846,    # RPC_E_SERVERCALL_RETRYLATER
+}
+
+# System variables that make AutoCAD show modal dialogs (which block COM)
+_SUPPRESSED_SYSVARS = ("FILEDIA", "CMDDIA", "PROXYNOTICE")
 
 
 class ConversionError(Exception):
     """Raised when DWG ↔ DXF conversion fails."""
 
 
+# ---------------------------------------------------------------------------
+# Work folder
+# ---------------------------------------------------------------------------
+
+def make_work_dir() -> str:
+    """Create a private temporary folder for intermediate files."""
+    return tempfile.mkdtemp(prefix="room_annotator_")
+
+
+def remove_work_dir(work_dir: str | None) -> None:
+    """Delete a folder created by :func:`make_work_dir`."""
+    if work_dir:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def dwg_to_dxf(
     dwg_path: str,
+    work_dir: str,
     log_fn: Callable[[str], None] | None = None,
 ) -> str:
     """Convert a DWG file to DXF using AutoCAD COM.
 
+    The DWG is copied into *work_dir* first, so a drawing the user has open
+    in AutoCAD is never touched.
+
     Parameters
     ----------
     dwg_path : str
-        Absolute path to the source .dwg file.
+        Path to the source .dwg file.
+    work_dir : str
+        Folder for intermediate files (from :func:`make_work_dir`).
     log_fn : callable, optional
 
     Returns
     -------
     str
-        Absolute path to the generated .dxf file (same directory).
+        Path to the generated .dxf file inside *work_dir*.
     """
     abs_path = os.path.abspath(dwg_path)
     if not os.path.exists(abs_path):
         raise ConversionError(f"DWG file not found:\n{abs_path}")
 
-    base, _ = os.path.splitext(abs_path)
-    dxf_path = f"{base}.dxf"
+    base = os.path.splitext(os.path.basename(abs_path))[0]
+    copy_path = os.path.join(work_dir, f"{base}_source.dwg")
+    dxf_path = os.path.join(work_dir, f"{base}.dxf")
 
     _log(log_fn, "Connecting to AutoCAD for DWG -> DXF conversion...")
+    with _acad_session(log_fn) as acad:
+        _warn_if_unsaved(acad, abs_path, log_fn)
+        shutil.copy2(abs_path, copy_path)
 
-    try:
-        acad = win32com.client.Dispatch("AutoCAD.Application")
-    except Exception as exc:
-        raise ConversionError(
-            "Could not connect to AutoCAD.\n"
-            "Please ensure AutoCAD is running.\n"
-            f"Detail: {exc}"
-        ) from exc
+        _log(log_fn, f"  Opening a copy of: {os.path.basename(abs_path)}")
+        try:
+            doc = _call(lambda: acad.Documents.Open(copy_path, True))  # read-only
+        except Exception as exc:
+            raise ConversionError(f"AutoCAD could not open the drawing.\nError: {exc}") from exc
 
-    _prepare_acad(acad, log_fn)
+        try:
+            _log(log_fn, "  Saving as DXF (AutoCAD 2018 format)...")
+            _call(lambda: doc.SaveAs(dxf_path, ACAD_DXF_FORMAT))
+        except Exception as exc:
+            raise ConversionError(f"Failed to convert DWG to DXF.\nError: {exc}") from exc
+        finally:
+            _close(doc, log_fn)
 
-    doc = None
-    opened_by_us = False
-
-    try:
-        # Check if already open
-        doc = _find_open_document(acad, abs_path)
-        if doc is None:
-            _log(log_fn, f"  Opening: {os.path.basename(abs_path)}")
-            doc = acad.Documents.Open(abs_path, True)  # read-only
-            opened_by_us = True
-        else:
-            _log(log_fn, f"  Using already-open document")
-
-        _log(log_fn, f"  Saving as DXF: {os.path.basename(dxf_path)}")
-        doc.SaveAs(dxf_path, ACAD_DXF_FORMAT)
-        _log(log_fn, "  DWG -> DXF conversion complete.")
-
-    except ConversionError:
-        raise
-    except Exception as exc:
-        raise ConversionError(
-            f"Failed to convert DWG to DXF.\n"
-            f"Error: {exc}"
-        ) from exc
-    finally:
-        if opened_by_us and doc is not None:
-            try:
-                doc.Close(False)  # don't save changes
-            except Exception:
-                pass
-
+    _log(log_fn, "  DWG -> DXF conversion complete.")
     return dxf_path
 
 
 def dxf_doc_to_dwg(
     dxf_doc,
     output_dwg_path: str,
+    work_dir: str,
     log_fn: Callable[[str], None] | None = None,
 ) -> str:
     """Convert an in-memory ezdxf document to DWG using AutoCAD COM.
@@ -109,7 +134,9 @@ def dxf_doc_to_dwg(
     dxf_doc : ezdxf.document.Drawing
         In-memory DXF document (from ezdxf.readfile or ezdxf.new).
     output_dwg_path : str
-        Absolute path where the output DWG should be saved.
+        Path where the output DWG should be saved.
+    work_dir : str
+        Folder for intermediate files (from :func:`make_work_dir`).
     log_fn : callable, optional
 
     Returns
@@ -118,155 +145,141 @@ def dxf_doc_to_dwg(
         Absolute path to the generated .dwg file.
     """
     abs_output = os.path.abspath(output_dwg_path)
-    temp_dxf = f"{os.path.splitext(abs_output)[0]}_temp.dxf"
-
-    _log(log_fn, "Connecting to AutoCAD for DXF -> DWG conversion...")
+    temp_dxf = os.path.join(work_dir, "annotated.dxf")
 
     try:
-        acad = win32com.client.Dispatch("AutoCAD.Application")
-    except Exception as exc:
-        raise ConversionError(
-            "Could not connect to AutoCAD.\n"
-            "Please ensure AutoCAD is running.\n"
-            f"Detail: {exc}"
-        ) from exc
-
-    _prepare_acad(acad, log_fn)
-
-    doc = None
-    opened_by_us = False
-
-    try:
-        # Save in-memory DXF to temporary file
-        _log(log_fn, f"  Saving temporary DXF: {os.path.basename(temp_dxf)}")
         dxf_doc.saveas(temp_dxf)
-
-        # Open temp DXF in AutoCAD and save as DWG
-        _log(log_fn, f"  Opening DXF: {os.path.basename(temp_dxf)}")
-        doc = acad.Documents.Open(temp_dxf, True)  # read-only
-        opened_by_us = True
-
-        _log(log_fn, f"  Saving as DWG: {os.path.basename(abs_output)}")
-        doc.SaveAs(abs_output, ACAD_DWG_FORMAT)
-        _log(log_fn, "  DXF -> DWG conversion complete.")
-
-        return abs_output
-
     except Exception as exc:
-        raise ConversionError(
-            f"DXF -> DWG conversion failed:\n{exc}"
-        ) from exc
-
-    finally:
-        if doc is not None and opened_by_us:
-            try:
-                doc.Close(False)
-            except Exception:
-                pass
-        # Clean up temporary DXF
-        try:
-            if os.path.exists(temp_dxf):
-                os.remove(temp_dxf)
-        except Exception:
-            pass
-
-
-def dxf_to_dwg(
-    dxf_path: str,
-    log_fn: Callable[[str], None] | None = None,
-) -> str:
-    """Convert a DXF file back to DWG using AutoCAD COM.
-
-    Parameters
-    ----------
-    dxf_path : str
-        Absolute path to the source .dxf file.
-    log_fn : callable, optional
-
-    Returns
-    -------
-    str
-        Absolute path to the generated .dwg file.
-    """
-    abs_path = os.path.abspath(dxf_path)
-    if not os.path.exists(abs_path):
-        raise ConversionError(f"DXF file not found:\n{abs_path}")
-
-    base, _ = os.path.splitext(abs_path)
-    dwg_path = f"{base}.dwg"
+        raise ConversionError(f"Could not write the temporary DXF.\nError: {exc}") from exc
 
     _log(log_fn, "Connecting to AutoCAD for DXF -> DWG conversion...")
+    with _acad_session(log_fn) as acad:
+        try:
+            doc = _call(lambda: acad.Documents.Open(temp_dxf, True))  # read-only
+        except Exception as exc:
+            raise ConversionError(f"AutoCAD could not open the annotated DXF.\nError: {exc}") from exc
 
+        try:
+            _log(log_fn, f"  Saving as DWG: {abs_output}")
+            _call(lambda: doc.SaveAs(abs_output, ACAD_DWG_FORMAT))
+        except Exception as exc:
+            raise ConversionError(
+                f"Could not save the DWG:\n{abs_output}\n\n"
+                "Check that the folder is writable and the file is not open in AutoCAD.\n"
+                f"Error: {exc}"
+            ) from exc
+        finally:
+            _close(doc, log_fn)
+
+    _log(log_fn, "  DXF -> DWG conversion complete.")
+    return abs_output
+
+
+# ---------------------------------------------------------------------------
+# AutoCAD session: connect, suppress dialogs, always restore
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _acad_session(log_fn=None):
+    """Connect to AutoCAD with dialogs suppressed; restore them on exit.
+
+    System variables can only be read or set through an open drawing. If
+    AutoCAD has none open (Start tab), a blank drawing is opened for the
+    duration and closed unsaved afterwards.
+    """
     try:
         acad = win32com.client.Dispatch("AutoCAD.Application")
     except Exception as exc:
         raise ConversionError(
             "Could not connect to AutoCAD.\n"
+            "Please ensure AutoCAD is installed and running.\n"
             f"Detail: {exc}"
         ) from exc
 
-    _prepare_acad(acad, log_fn)
+    try:
+        _call(lambda: setattr(acad, "Visible", True))
+    except Exception as exc:
+        _log(log_fn, f"  WARNING: could not make AutoCAD visible: {exc}")
+
+    anchor, anchor_is_ours = None, False
+    saved: dict[str, object] = {}
+    try:
+        if _call(lambda: acad.Documents.Count) > 0:
+            anchor = _call(lambda: acad.ActiveDocument)
+        else:
+            anchor = _call(lambda: acad.Documents.Add())
+            anchor_is_ours = True
+        for var in _SUPPRESSED_SYSVARS:
+            saved[var] = _call(lambda: anchor.GetVariable(var))
+            _call(lambda: anchor.SetVariable(var, 0))
+        _log(log_fn, "  Suppressed AutoCAD dialogs (restored when finished).")
+    except Exception as exc:
+        _log(log_fn, f"  WARNING: could not suppress AutoCAD dialogs ({exc}). "
+                     "If AutoCAD shows a dialog, dismiss it to continue.")
 
     try:
-        _log(log_fn, f"  Opening DXF: {os.path.basename(abs_path)}")
-        doc = acad.Documents.Open(abs_path, False)
-
-        _log(log_fn, f"  Saving as DWG: {os.path.basename(dwg_path)}")
-        doc.SaveAs(dwg_path)  # default format = DWG
-
-        doc.Close(False)
-        _log(log_fn, "  DXF -> DWG conversion complete.")
-
-    except ConversionError:
-        raise
-    except Exception as exc:
-        raise ConversionError(
-            f"Failed to convert DXF to DWG.\n"
-            f"Error: {exc}"
-        ) from exc
-
-    return dwg_path
+        yield acad
+    finally:
+        for var, value in saved.items():
+            try:
+                _call(lambda: anchor.SetVariable(var, value))
+            except Exception as exc:
+                _log(log_fn, f"  WARNING: could not restore {var} to {value} ({exc}). "
+                             f"Type {var} in AutoCAD and set it to {value}.")
+        if anchor_is_ours:
+            _close(anchor, log_fn)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _prepare_acad(acad, log_fn=None) -> None:
-    """Make AutoCAD visible and suppress dialogs that cause COM to hang."""
-    try:
-        acad.Visible = True
-        _log(log_fn, "  AutoCAD is visible.")
-    except Exception:
-        pass
+def _call(fn):
+    """Run a COM call, retrying while AutoCAD reports that it is busy.
 
-    try:
-        # FILEDIA=0 suppresses file-related dialog boxes
-        doc = acad.ActiveDocument
-        if doc is not None:
-            doc.SetVariable("FILEDIA", 0)
-            doc.SetVariable("CMDDIA", 0)
-            # Suppress proxy graphics warning
-            doc.SetVariable("PROXYNOTICE", 0)
-            _log(log_fn, "  Suppressed AutoCAD dialogs (FILEDIA=0, PROXYNOTICE=0).")
-    except Exception:
-        pass
+    A busy AutoCAD shows up either as a busy HRESULT, or — when pywin32
+    first has to look a member up by name — as an AttributeError naming
+    the member (e.g. "AutoCAD.Application.Documents").
+    """
+    deadline = time.monotonic() + COM_RETRY_SECONDS
+    while True:
+        try:
+            return fn()
+        except pywintypes.com_error as exc:
+            if exc.hresult not in _BUSY_HRESULTS or time.monotonic() >= deadline:
+                raise
+        except AttributeError:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(0.5)
 
 
-def _find_open_document(acad, dwg_path: str):
-    """Return the Document COM object if already open, else None."""
-    abs_lower = os.path.abspath(dwg_path).lower()
+def _close(doc, log_fn=None) -> None:
+    """Close a drawing without saving; log (don't hide) a failure."""
     try:
-        for i in range(acad.Documents.Count):
-            doc = acad.Documents.Item(i)
-            try:
-                if doc.FullName.lower() == abs_lower:
-                    return doc
-            except Exception:
-                continue
+        name = _call(lambda: doc.Name)
     except Exception:
-        pass
-    return None
+        name = "drawing"
+    try:
+        _call(lambda: doc.Close(False))
+    except Exception as exc:
+        _log(log_fn, f"  WARNING: could not close {name} in AutoCAD ({exc}). "
+                     "Close it manually without saving.")
+
+
+def _warn_if_unsaved(acad, dwg_path: str, log_fn=None) -> None:
+    """Log a warning if *dwg_path* is open in AutoCAD with unsaved changes."""
+    target = os.path.normcase(os.path.abspath(dwg_path))
+    try:
+        for i in range(_call(lambda: acad.Documents.Count)):
+            doc = _call(lambda: acad.Documents.Item(i))
+            if os.path.normcase(_call(lambda: doc.FullName)) == target:
+                if not _call(lambda: doc.Saved):
+                    _log(log_fn, "  WARNING: this drawing has unsaved changes in AutoCAD. "
+                                 "The last saved version on disk is used.")
+                return
+    except Exception:
+        pass    # purely informational
 
 
 def _log(fn, msg: str) -> None:

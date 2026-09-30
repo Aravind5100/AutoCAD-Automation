@@ -509,9 +509,12 @@ class AppUI:
         from autocad_scanner import AutoCADError, scan_drawing
         from polygon_matcher import associate_texts_with_polygons, match_rooms
         from annotation_writer import write_annotations
-        from dwg_converter import dwg_to_dxf, dxf_doc_to_dwg, ConversionError
+        from dwg_converter import (
+            ConversionError, dwg_to_dxf, dxf_doc_to_dwg, make_work_dir, remove_work_dir,
+        )
 
         pythoncom.CoInitialize()
+        work_dir = make_work_dir()   # intermediate files only; deleted below
         try:
             self._log("=" * 56, tag="HEADER")
             self._log("Starting AutoCAD Room Annotation", tag="HEADER")
@@ -524,11 +527,11 @@ class AppUI:
                 self._set_status("Converting DWG to DXF...")
                 self._log("Converting DWG -> DXF via AutoCAD...", tag="INFO")
                 try:
-                    dxf_path = dwg_to_dxf(dwg_path, log_fn=self._log)
+                    dxf_path = dwg_to_dxf(dwg_path, work_dir, log_fn=self._log)
                 except ConversionError as exc:
                     self._log(f"Conversion ERROR: {exc}", tag="ERROR")
                     self._set_status("Error -- DWG conversion failed.")
-                    messagebox.showerror("Conversion Error", str(exc))
+                    self._dialog("error", "Conversion Error", str(exc))
                     return
             else:
                 dxf_path = dwg_path
@@ -547,7 +550,8 @@ class AppUI:
                     tag="ERROR",
                 )
                 self._set_status(f"Stopped -- no rows for building {building_id}.")
-                messagebox.showwarning(
+                self._dialog(
+                    "warning",
                     "No Matching Rows",
                     f"No spreadsheet rows match building {building_id}.\n"
                     "Update cancelled.",
@@ -629,11 +633,11 @@ class AppUI:
                 self._set_status("Converting to DWG...")
                 self._log("Converting annotated DXF -> DWG...", tag="INFO")
                 try:
-                    output_path = dxf_doc_to_dwg(annotated_dxf_doc, output_path, log_fn=self._log)
+                    output_path = dxf_doc_to_dwg(annotated_dxf_doc, output_path, work_dir, log_fn=self._log)
                 except ConversionError as exc:
                     self._log(f"DXF->DWG conversion failed: {exc}", tag="ERROR")
                     self._set_status("Error -- DXF->DWG conversion failed.")
-                    messagebox.showerror("Conversion Error", str(exc))
+                    self._dialog("error", "Conversion Error", str(exc))
                     return
             else:
                 # If input was DXF, save the annotated DXF
@@ -643,7 +647,7 @@ class AppUI:
                 except Exception as exc:
                     self._log(f"Failed to save annotated DXF: {exc}", tag="ERROR")
                     self._set_status("Error -- could not save output.")
-                    messagebox.showerror("Save Error", f"Could not save:\n{output_path}\n\n{exc}")
+                    self._dialog("error", "Save Error", f"Could not save:\n{output_path}\n\n{exc}")
                     return
 
             # --- Phase 6: Summary ---
@@ -665,7 +669,8 @@ class AppUI:
             self._log("=" * 56, tag="HEADER")
 
             self._set_status(f"Done -- {inserted} annotations inserted.")
-            messagebox.showinfo(
+            self._dialog(
+                "info",
                 "Complete",
                 f"Annotation complete!\n\n"
                 f"Building        : {building_id}\n"
@@ -678,20 +683,28 @@ class AppUI:
         except AutoCADError as exc:
             self._log(f"AutoCAD ERROR: {exc}", tag="ERROR")
             self._set_status("Error -- see log.")
-            messagebox.showerror("AutoCAD Error", str(exc))
+            self._dialog("error", "AutoCAD Error", str(exc))
 
         except Exception as exc:
             self._log(f"Unexpected error: {exc}", tag="ERROR")
             self._set_status("Unexpected error -- see log.")
-            messagebox.showerror("Error", f"An unexpected error occurred:\n{exc}")
+            self._dialog("error", "Error", f"An unexpected error occurred:\n{exc}")
 
         finally:
+            remove_work_dir(work_dir)
             self._set_running(False)
             pythoncom.CoUninitialize()
 
     # ------------------------------------------------------------------
     # UI state helpers (thread-safe)
     # ------------------------------------------------------------------
+
+    def _dialog(self, kind: str, title: str, message: str):
+        """Show a message box from any thread (Tk calls must run on the main thread)."""
+        show = {"info": messagebox.showinfo,
+                "warning": messagebox.showwarning,
+                "error": messagebox.showerror}[kind]
+        self.root.after(0, lambda: show(title, message))
 
     def _set_running(self, running: bool):
         def _update():

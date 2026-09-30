@@ -20,7 +20,6 @@ import os
 from typing import Callable
 
 import ezdxf
-from ezdxf.math import Vec3
 
 from config import (
     ANNOTATION_COLOR,
@@ -37,7 +36,7 @@ from metadata_utils import (
     register_xdata_app,
     write_xdata,
 )
-from utils import build_attribute_map, build_output_path
+from utils import build_attribute_map
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +50,7 @@ def write_annotations(
     building_id: str,
     existing_annotation_ids: set[str],
     log_fn: Callable[[str], None] | None = None,
-) -> tuple[str, int]:
+) -> tuple[ezdxf.document.Drawing, int]:
     """Insert attributed block annotations and save the DXF.
 
     Parameters
@@ -70,7 +69,8 @@ def write_annotations(
 
     Returns
     -------
-    (output_path, inserted_count)
+    (annotated_doc, inserted_count)
+        The annotated in-memory drawing; the caller saves or converts it.
     """
     abs_path = os.path.abspath(dxf_path)
     _log(log_fn, f"Opening DXF for annotation: {os.path.basename(abs_path)}")
@@ -105,8 +105,7 @@ def write_annotations(
 
     if not selected_columns:
         _log(log_fn, "  WARNING: No matched rows with data to insert.")
-        output_path = _build_dxf_output_path(dxf_path)
-        return output_path, 0
+        return doc, 0
 
     # Track created block definitions
     created_blocks: set[str] = set()
@@ -168,7 +167,8 @@ def write_annotations(
                 text_handle=match.text_handle,
                 match_method=match.match_method,
             )
-            write_xdata(block_ref, meta)
+            if not write_xdata(block_ref, meta):
+                _log(log_fn, f"  WARNING: Could not attach metadata (XData) for {match.room_id}")
 
             inserted += 1
 
@@ -316,17 +316,8 @@ def _draw_outline(
 
 def _ensure_layer(doc, layer_name: str, color: int) -> None:
     """Create the layer if it doesn't exist."""
-    try:
-        if layer_name not in doc.layers:
-            doc.layers.add(layer_name, color=color)
-    except Exception:
-        pass
-
-
-def _build_dxf_output_path(dxf_path: str) -> str:
-    """``plan.dxf`` -> ``plan_updated.dxf``"""
-    base, ext = os.path.splitext(dxf_path)
-    return f"{base}_updated{ext}"
+    if layer_name not in doc.layers:
+        doc.layers.add(layer_name, color=color)
 
 
 # ---------------------------------------------------------------------------
