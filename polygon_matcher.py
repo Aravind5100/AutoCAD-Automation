@@ -65,7 +65,6 @@ class RoomMatch:
 class MatchSummary:
     """Aggregate statistics for the full pipeline."""
     total_texts: int = 0
-    total_polygons: int = 0
     texts_with_polygon: int = 0
     texts_without_polygon: int = 0
     total_sheet_rows: int = 0
@@ -192,7 +191,6 @@ def match_rooms(
     """
     summary = MatchSummary(
         total_texts=len(room_texts),
-        total_polygons=0,
         associations=associations,
     )
 

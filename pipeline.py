@@ -16,7 +16,6 @@ when the current step finishes. Nothing is written when a run is cancelled.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Callable
 

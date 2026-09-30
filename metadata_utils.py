@@ -89,8 +89,3 @@ def read_xdata(entity) -> AnnotationMetadata | None:
         )
     except Exception:
         return None
-
-
-def has_app_xdata(entity) -> bool:
-    """Return True if *entity* carries XData for our application."""
-    return read_xdata(entity) is not None

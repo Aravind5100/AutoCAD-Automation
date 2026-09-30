@@ -40,20 +40,6 @@ def normalize_col(name: str) -> str:
     return name.strip()
 
 
-def find_column(columns: list[str], target: str) -> str | None:
-    """Return the first column whose normalized name matches *target*."""
-    target_norm = normalize_col(target)
-    for col in columns:
-        if normalize_col(col) == target_norm:
-            return col
-    return None
-
-
-def build_col_map(columns: list[str]) -> dict[str, str]:
-    """Build a mapping of normalized_name → original_name for every column."""
-    return {normalize_col(c): c for c in columns}
-
-
 # ---------------------------------------------------------------------------
 # Building identifier helpers
 # ---------------------------------------------------------------------------
