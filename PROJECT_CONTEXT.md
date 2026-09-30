@@ -19,8 +19,10 @@ A Windows desktop tool (Python + Tkinter) that takes:
 - an **AutoCAD floor plan** (DWG, or DXF),
 
 finds the room-number labels and room-boundary polygons in the drawing, matches each room to its
-spreadsheet row, and writes the chosen spreadsheet columns into the drawing as **ArcGIS-readable
-attributed blocks** (INSERT + ATTRIB), plus a room-outline copy and XData metadata.
+spreadsheet row, and copies each matched room's boundary polygon onto its own **layer named
+`[Building]-[Floor]-[Room]`** (e.g. `0132-01-101`, values as-is from the spreadsheet row), with XData
+linking the copy to the source polygon. ArcGIS reads the key from the polygon's Layer field and joins
+the facilities table on it. No blocks or attribute values are written (changed from blocks on 2026-09-29).
 Output: a new DWG (or DXF) at a location the user picks in a Save As dialog (suggested name `<name>_annotated.<ext>`, starting in Documents). The input file is never overwritten and cannot be chosen as the target.
 
 AutoCAD itself is only used (over COM) to convert DWG ↔ DXF. All drawing reading and writing is
@@ -40,8 +42,8 @@ Context clues: the author's email is `@GMU.EDU`, and the example filename in the
 `0132_SATELLITE DISH LAB ANNEX_01.dwg` (4-digit building code + building name). That points to a
 university facilities / GIS setting where drawings are named by building number and one spreadsheet covers many buildings.
 
-**The goal:** point the tool at a spreadsheet and a drawing, pick columns, click Run → get an annotated drawing
-whose room data shows up as fields in the ArcGIS attribute table.
+**The goal:** point the tool at a spreadsheet and a drawing, pick the room / building / floor columns, click Run →
+get a drawing whose room polygons carry a `Building-Floor-Room` key (as their layer) that ArcGIS can join on.
 
 **Requirements that shaped the design [history]:**
 
@@ -49,7 +51,7 @@ whose room data shows up as fields in the ArcGIS attribute table.
 2. Only use spreadsheet rows for the drawing's own building (the spreadsheet covers many buildings).
 3. Tie each annotation to its room polygon so it can be queried later (XData with polygon handle).
 4. Re-running should not create duplicates.
-5. Output must import cleanly into **ArcGIS** (attributed blocks, safe names, tags ≤ 30 chars).
+5. Output must import cleanly into **ArcGIS**: originally attributed blocks; since 2026-09-29 **one layer per room** named `Building-Floor-Room` (owner: ArcGIS handles layers better than blocks).
 6. Must be usable by non-developers (GUI, setup/run scripts, troubleshooting README).
 
 ---
@@ -76,7 +78,7 @@ whose room data shows up as fields in the ArcGIS attribute table.
 ### 4.1 Pipeline (current code, `ui.py::_run_annotation`, runs on a worker thread)
 
 ```
-User picks: spreadsheet, drawing, room-ID column, building column, columns to insert
+User picks: spreadsheet, drawing, room-ID column, building column, floor column (must be 3 different columns)
         │
 Phase 0 │ dwg_converter.dwg_to_dxf(dwg, work_dir)   [only if input is .dwg]
         │   _acad_session: Dispatch → save+zero FILEDIA/CMDDIA/PROXYNOTICE (blank anchor drawing if none open)
@@ -87,17 +89,20 @@ Phase 1 │ utils.extract_building_id()  first 4 chars of filename, uppercased
 Phase 2 │ autocad_scanner.scan_drawing()  ezdxf.readfile, one pass over modelspace:
         │   TEXT/MTEXT → is_room_identifier() → RoomText
         │   closed LWPOLYLINE/POLYLINE, area ≥ 1.0 → RoomPolygon (vertices, area, centroid, bbox)
-        │   INSERT on ROOM_DATA → existing annotation IDs (dedup — BROKEN, see B2)
+        │   polygon carrying our XData = room-layer copy from a previous run → existing IDs (dedup), not a room
+        │   polygons on LEGACY_OUTLINE_LAYERS (old block-era outlines) skipped
         │   stop if no room texts
 Phase 3 │ polygon_matcher.associate_texts_with_polygons()
         │   bbox prefilter → ray-cast → smallest containing polygon ("contains", conf 1.0)
         │   else nearest centroid ≤ 500 units ("nearest", conf = 1 - d/500)
-Phase 4 │ polygon_matcher.match_rooms()   strip+lowercase exact match; first drawing occurrence wins
+Phase 4 │ polygon_matcher.match_rooms(..., [building_col, floor_col, room_col])   strip+lowercase exact match;
+        │   first drawing occurrence wins; row_data carries the three key values
         │   stop if 0 matches
-Phase 5 │ annotation_writer.write_annotations()   re-reads the DXF with ezdxf, returns (Drawing, count)
-        │   per matched room: block def ROOM_BLOCK_<ID> (ATTDEF per column) → INSERT on ROOM_DATA
-        │   placed at label X, label Y − h×1.6 → ATTRIBs → outline copy on ROOM_BLOCK_OUTLINE
-        │   → XData ROOM_INFO_AI
+Phase 5 │ annotation_writer.write_room_layers()   re-reads the DXF with ezdxf, returns (Drawing, created)
+        │   per matched room: key = utils.build_room_key(row[bldg], row[floor], row[room])
+        │   → layer <key> (colour 3) → closed copy of the room polygon on it (LWPOLYLINE; POLYLINE if R12)
+        │   → XData ROOM_INFO_AI. Skips (logged): already has a layer, no polygon, empty key part.
+        │   Flags: rooms linked by "nearest", polygons shared by 2+ labels
 Phase 5b│ .dwg input: dwg_converter.dxf_doc_to_dwg(doc, out, work_dir)  temp DXF in work_dir → open → SaveAs(out, 64)
         │ work_dir (tempfile.mkdtemp) is removed in _run_annotation's finally
         │ .dxf input: doc.saveas(out)      (out = path chosen in AppUI._ask_output_path before the run starts)
@@ -109,29 +114,28 @@ Phase 6 │ summary to log + messagebox
 | File | Responsibility | Notes |
 |---|---|---|
 | `main.py` | Entry point; DPI awareness; centre window | |
-| `ui.py` | `AppUI`: 4-step GUI, validation, worker thread, whole pipeline orchestration | Log/status updates are marshalled via `root.after`; **messageboxes are not** (B6) |
+| `ui.py` | `AppUI`: 4-step GUI (Room / Building / Floor drop-downs + live key preview), validation, Save As prompt, worker thread, pipeline orchestration | All Tk calls from the worker go through `root.after` (`_dialog`, `_log`, `_set_status`) |
 | `config.py` | Every tunable constant | Some constants are dead (see §8) |
 | `spreadsheet_loader.py` | `load_spreadsheet` (dtype=str, keep_default_na=False), `_clean_dataframe`, room-ID column guess | Excel header row = **3rd row** by default (enterprise reports have title rows) |
-| `utils.py` | Column normalisation, building-ID logic, MTEXT code stripping, room-ID heuristic, geometry, attribute-map builder | |
-| `dwg_converter.py` | AutoCAD COM conversion only: `dwg_to_dxf`, `dxf_doc_to_dwg`, (unused) `dxf_to_dwg`, `_prepare_acad` | |
+| `utils.py` | Column normalisation, building-ID + floor-column detection, room-ID heuristic, geometry, `build_room_key` | |
+| `dwg_converter.py` | AutoCAD COM conversion only: `dwg_to_dxf`, `dxf_doc_to_dwg`, `make_work_dir`/`remove_work_dir`, `_acad_session`, `_call` | |
 | `autocad_scanner.py` | ezdxf single-pass scan → `RoomText`, `RoomPolygon`, `ScanResult` dataclasses | `AutoCADError` name kept from COM era |
 | `polygon_matcher.py` | `TextPolygonAssociation`, `RoomMatch`, `MatchSummary`; spatial association + sheet matching | O(texts × polygons) — fine for floor plans |
-| `annotation_writer.py` | Blocks, attribs, outlines, XData via ezdxf | Returns an in-memory `Drawing`, **not** a path (docstring is stale) |
-| `metadata_utils.py` | `AnnotationMetadata`, XData write/read, ArcGIS-safe `normalize_block_name` / `tag_from_column` | |
+| `annotation_writer.py` | `write_room_layers`: room polygon copies on `Building-Floor-Room` layers + XData | Returns the in-memory `Drawing` |
+| `metadata_utils.py` | `AnnotationMetadata` (type `room_layer`), XData write/read | |
 | `setup.bat` / `run.bat` | End-user setup (venv + pip) and launch (warns if `acad.exe` not running) | |
-| `tests/` + `run_tests.bat` | unittest suite (56 tests): utils, metadata, spreadsheet, scanner, matcher, pipeline, converter (fake COM), UI (scripted dialogs); `test_acad_integration.py` runs only with `RUN_ACAD_TESTS=1` / `run_tests.bat acad` | Known open issues B10/B11/B12 are `expectedFailure` tests — they start "unexpectedly passing" when fixed |
-| `build_exe.spec` | PyInstaller one-folder GUI build | Untracked in working tree (re-added after being deleted in d00322d) |
+| `tests/` + `run_tests.bat` | unittest suite (63 tests): utils, metadata, spreadsheet, scanner, matcher, pipeline, converter (fake COM), UI (scripted dialogs); `test_acad_integration.py` runs only with `RUN_ACAD_TESTS=1` / `run_tests.bat acad` | Known open issues B10/B11 are `expectedFailure` tests — they start "unexpectedly passing" when fixed |
+| `build_exe.spec` | PyInstaller one-folder GUI build | Committed in 7f31ea3; exe vs ZIP still undecided |
 
 ### 4.3 What gets written into the drawing (output contract)
 
 | Item | Value |
 |---|---|
-| Layers created | `ROOM_DATA` (block inserts + attribs), `ROOM_BLOCK_OUTLINE` (outlines), colour 3 (green) |
-| Block definition | `ROOM_BLOCK_<ROOM_ID>` — non-alphanumerics → `_`, uppercased, ≤ 255 chars |
-| Attribute tags | from column names: non-alphanumerics → `_`, uppercased, ≤ 30 chars (`"Occupied By"` → `OCCUPIED_BY`); prompt = original column name |
-| Insert point | room label X; label Y − text_height × 1.6; attrib lines spaced text_height × 1.6 |
-| Outline | copy of the associated room polygon (POLYLINE in R12); fallback rectangle ~25 × text height wide if no polygon |
-| XData app | `ROOM_INFO_AI`, six 1000-strings in order: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type("room_info")` |
+| Layer per room | `<Building>-<Floor>-<Room>` (`ROOM_KEY_SEPARATOR`), values **as-is** from the matched spreadsheet row, whitespace-trimmed; characters in `LAYER_NAME_FORBIDDEN_CHARS` replaced with `_`; colour 3 (green) |
+| Geometry | a closed **copy** of the associated room polygon on that layer (LWPOLYLINE; POLYLINE for R12 DXF). Originals untouched |
+| Not written | blocks, attributes, text, outlines/rectangles (a room with no polygon is skipped, not approximated) |
+| XData app | `ROOM_INFO_AI` on the copy, six 1000-strings: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type("room_layer")` |
+| ArcGIS | polygon feature class → `Layer` field = key → join the facilities table on it |
 
 Handles in XData are handles in the intermediate DXF. [verified 2026-09-29 with AutoCAD 2023] they stay valid in the
 final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed at the room polygon.
@@ -150,6 +154,7 @@ final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed a
 | Sep 29 | group-1 fix | 2018 DXF/DWG conversion (B1, B3), MTEXT via `plain_text()` + `char_height` fix (B8), 2D-only POLYLINE filter, user-chosen output location (D13). |
 | Sep 29 | groups 2+3 | Dedup fixed (B2) and outline copies ignored on re-scan; pandas-3-safe cleaning (B5); private work dir + copy-before-convert (B4, B9); sysvars saved/restored with anchor drawing (B7, B19); busy-call retry `_call` (B18); dialogs marshalled to Tk main thread (B6); writer returns a Drawing (B13). Verified offline, with fake COM, and against AutoCAD 2023. |
 | Sep 29 | group 4 | `tests/` unittest suite + `run_tests.bat` (B17): 56 offline tests + 2 opt-in real-AutoCAD tests, all passing. |
+| Sep 29 | D14 room layers | Blocks replaced by one `Building-Floor-Room` layer per room (polygon copy + XData); Floor column in GUI with live key preview; dedup via XData on copies; README rewritten for the ArcGIS layer workflow. 63 offline + 2 AutoCAD tests pass. |
 
 Branch note: there is **no `main` branch** — local branches are `master`, `dev_mtext`, `dev_exe`; remote default is `dev_mtext`.
 
@@ -164,9 +169,10 @@ Branch note: there is **no `main` branch** — local branches are `master`, `dev
 | D3 | Building ID = first 4 chars of DWG filename; filter spreadsheet before matching; abort if 0 rows | Prevents cross-building mistakes when one sheet covers campus | history |
 | D4 | Metadata in **XData** (`ROOM_INFO_AI`) with polygon + text handles | Standard AutoCAD mechanism; survives save; queryable later | history |
 | D5 | **Migrate from COM entity access to ezdxf** (keep COM only for conversion) | [inferred] COM is one cross-process call per property (slow on large drawings), fragile (busy/rejected calls, modal dialogs), and returns raw MTEXT formatting codes (the stripper's comment says "returned by AutoCAD COM TextString"). ezdxf is fast, testable offline, deterministic | commit msg says *what*, not *why* |
-| D6 | Output **attributed blocks** instead of MTEXT | ArcGIS turns block attributes into attribute-table fields; MTEXT is just text | history (README ArcGIS section) |
+| D6 | ~~Output **attributed blocks** instead of MTEXT~~ (superseded by D14) | ArcGIS turns block attributes into attribute-table fields; MTEXT is just text | history (README ArcGIS section) |
 | D7 | ~~Convert through **R12 DXF**~~ → **2018 DXF / native DWG** since 2026-09-29 (`ACAD_DXF_FORMAT = 65`, `ACAD_DWG_FORMAT = 64`) | R12 was [inferred] chosen for easy scanning but degraded the whole drawing (B3). MTEXT is now read with ezdxf `MText.plain_text()` | code |
 | D13 | User chooses the **output location** (Save As dialog, starts in Documents, remembers last folder, refuses the input file) | Owner decision 2026-09-29: don't save next to the original by default | code |
+| D14 | **Room layers instead of blocks** (2026-09-29): each matched room's polygon copied onto a layer named `Building-Floor-Room`; values as-is from the spreadsheet row; Floor from a spreadsheet column; copy (not move) the polygon; unmatched rooms skipped; no blocks/attributes | Owner decision: ArcGIS works better with layers than blocks on CAD import; the key is joined to the facilities table in ArcGIS | owner |
 | D8 | Distribute as **ZIP + setup.bat/run.bat**, not a PyInstaller exe | [inferred] exe build of pywin32/pandas is large and brittle and trips antivirus; ZIP + venv is transparent. d00322d: "replaced by ZIP distribution". Branch `dev_exe` + re-added spec suggests this is still open | history |
 | D9 | Suppress AutoCAD dialogs (FILEDIA/CMDDIA/PROXYNOTICE = 0) | Modal dialogs block COM calls forever ("hangs at Converting DWG → DXF") | history (d00322d, README troubleshooting) |
 | D10 | Single-pass scan into plain dataclasses; no live entity references after scan | Performance and separation (matcher/writer never touch the CAD layer) | history |
@@ -208,7 +214,7 @@ Severity: 🔴 wrong output / data loss · 🟠 incorrect behaviour · 🟡 robu
 | **B9** ✅ fixed 2026-09-29 | 🟠 | If the drawing is **already open** in AutoCAD (which the README tells users to do), `dwg_to_dxf` calls `SaveAs` on the user's open document, which re-points that document to the R12 `.dxf` [inferred AutoCAD SaveAs semantics]. | code | Open a separate read-only copy, or use `doc.Export`/`WBLOCK`-style copy. |
 | **B10** | 🟡 | Excel numeric building codes lose leading zeros: cell `132` (number) → `'132'` ≠ `'0132'` → rows filtered out. | [verified] openpyxl test | Zero-pad numeric building values to `BUILDING_ID_LENGTH`, or warn. |
 | **B11** | 🟡 | Room-ID heuristic false positives: `"1ST FLOOR"`, `"LEVEL 2"`, `"SCALE 1"`, `"STAIR 3"`, `"UP 18R"`, `"2024"` all pass; `"Room 101"` passes but will not match sheet `"101"`. False negatives: `"LOBBY"`, `"101 / 102"`. Harmless unless a false positive matches a sheet ID. | [verified] ran function | Optional label-layer filter; configurable regex. |
-| **B12** | 🟡 | Existing `ROOM_BLOCK_<ID>` definition is reused as-is → newly selected columns silently dropped. `"101-A"`, `"101 A"`, `"101_A"` collide to one block name. | [verified] code + ran | Name blocks by column-set hash or redefine. |
+| **B12** ➖ obsolete 2026-09-29 (no blocks since D14) | 🟡 | Existing `ROOM_BLOCK_<ID>` definition is reused as-is → newly selected columns silently dropped. `"101-A"`, `"101 A"`, `"101_A"` collide to one block name. | [verified] code + ran | Name blocks by column-set hash or redefine. |
 | **B13** ✅ fixed 2026-09-29 | 🟡 | `write_annotations` returns `(Drawing, n)` normally but `(str, 0)` when nothing to write → caller would crash on `.saveas`. Guarded in practice by the `matched_count == 0` stop. Docstring still says it returns a path. | [verified] code (`annotation_writer.py:109, 184`) | Return `(doc, 0)`. |
 | **B14** | 🟡 | Nearest fallback uses centroid distance in raw drawing units (500 means very different things in mm vs inches); L-shaped rooms have centroids outside the room. | [verified] L-shape test | Distance to polygon edge; unit-aware threshold. |
 | **B15** | 🟡 | Dead code/config left from the COM/MTEXT era (partly cleaned 2026-09-29: `dxf_to_dwg`, `_prepare_acad`, `_build_dxf_output_path`, `strip_mtext_formatting`, `Vec3`/`time` imports removed; `read_xdata` now used). Still left: `format_mtext_content`, `build_output_path`, `has_app_xdata`, `find_column`, `build_col_map`; constants `OUTPUT_LAYER` (still used only for legacy MTEXT dedup), `MTEXT_WIDTH_FACTOR`, `VERTICAL_SPACING_MULTIPLIER`, `DXF_VERSION`, `ARCGIS_SAFE_LAYER`; unused imports (`time`, `Vec3`, `build_output_path`). | [verified] grep | Remove after fixing B2. |
@@ -225,7 +231,7 @@ Severity: 🔴 wrong output / data loss · 🟠 incorrect behaviour · 🟡 robu
 - A working GUI tool that runs spreadsheet → drawing annotation end to end on DXF input (verified offline in this analysis),
   and on DWG input via AutoCAD (developer-tested per commit history; output format subject to B1/B3).
 - `AutoCAD_Room_Annotator_v1.0.zip`: end-user package with `setup.bat`, `run.bat`, and a troubleshooting README.
-- ArcGIS-ready output structure: attributed blocks on `ROOM_DATA`, safe names, per-room XData linking annotation → polygon → source label → building.
+- ArcGIS-ready output structure: (now) one `Building-Floor-Room` layer per room holding a polygon copy; per-room XData linking copy → polygon → source label → building.
 - A reusable pure-Python geometry/association core (`utils.py`, `polygon_matcher.py`) with no CAD dependency.
 
 **Proved (demonstrated by the implementation)**
@@ -279,5 +285,5 @@ in `tearDown` that AutoCAD's sysvars and open drawings are unchanged.
 ### 10.5 Open questions for the owner
 1. Exe (PyInstaller, `dev_exe` branch, re-added spec) or ZIP distribution — which is final?
 2. Was R12 chosen deliberately (e.g. an ArcGIS or older-tool requirement), or only for scan convenience? (Decides the B1/B3 fix.)
-3. Should the building ID also be written as a block attribute so it shows in ArcGIS?
+3. ~~Should the building ID also be written as a block attribute?~~ Moot since D14 — the building is part of every layer name.
 4. Is annotating an already-annotated drawing an expected workflow (B2 priority)?

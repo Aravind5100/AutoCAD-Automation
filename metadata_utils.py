@@ -1,20 +1,19 @@
 """
 metadata_utils.py
 -----------------
-XData helpers for linking AutoCAD annotations to room polygons,
-plus ArcGIS-safe naming utilities.
+XData helpers for linking the room-layer polygon copies back to the
+source room polygon and room label.
 
 Uses **ezdxf** for all XData read/write operations (no COM).
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import ezdxf
 
-from config import BLOCK_NAME_PREFIX, XDATA_APP_NAME
+from config import XDATA_APP_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -23,13 +22,13 @@ from config import BLOCK_NAME_PREFIX, XDATA_APP_NAME
 
 @dataclass
 class AnnotationMetadata:
-    """Metadata stored as XData on each annotation entity."""
+    """Metadata stored as XData on each room-layer polygon copy."""
     room_id: str = ""
     polygon_handle: str = ""
     building_id: str = ""
     text_handle: str = ""
     match_method: str = ""          # "contains" | "nearest" | ""
-    annotation_type: str = "room_info"
+    annotation_type: str = "room_layer"
 
 
 # ---------------------------------------------------------------------------
@@ -95,34 +94,3 @@ def read_xdata(entity) -> AnnotationMetadata | None:
 def has_app_xdata(entity) -> bool:
     """Return True if *entity* carries XData for our application."""
     return read_xdata(entity) is not None
-
-
-# ---------------------------------------------------------------------------
-# ArcGIS-safe naming helpers
-# ---------------------------------------------------------------------------
-
-def normalize_block_name(name: str) -> str:
-    """Convert *name* to an ArcGIS-safe block name.
-
-    Rules: alphanumeric + underscore only, uppercased, max 255 chars.
-    Prefixed with BLOCK_NAME_PREFIX.
-
-    Example: ``"101-A"`` -> ``"ROOM_BLOCK_101_A"``
-    """
-    safe = re.sub(r"[^A-Za-z0-9]", "_", name.strip()).upper()
-    safe = re.sub(r"_+", "_", safe).strip("_")
-    full = f"{BLOCK_NAME_PREFIX}_{safe}"
-    return full[:255]
-
-
-def tag_from_column(col_name: str) -> str:
-    """Convert a spreadsheet column name to an ArcGIS-safe attribute TAG.
-
-    Rules: alphanumeric + underscore only, uppercased, max 30 chars.
-    No spaces, no special characters.
-
-    Example: ``"Occupied By"`` -> ``"OCCUPIED_BY"``
-    """
-    safe = re.sub(r"[^A-Za-z0-9]", "_", col_name.strip()).upper()
-    safe = re.sub(r"_+", "_", safe).strip("_")
-    return safe[:30]

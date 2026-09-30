@@ -4,7 +4,7 @@ ui.py
 Tkinter-based GUI for the AutoCAD Room Annotation tool.
 Manages the full workflow:
   Step 1 - File selection (spreadsheet + DWG)
-  Step 2 - Column selection (room ID + building ID + fields to insert)
+  Step 2 - Column selection (room, building and floor columns)
   Step 3 - Preview & run the update process
   Step 4 - Display summary results
 """
@@ -23,10 +23,13 @@ from spreadsheet_loader import (
     get_columns,
     load_spreadsheet,
 )
+from config import ROOM_KEY_SEPARATOR
 from utils import (
     detect_building_column,
+    detect_floor_column,
     extract_building_id,
     filter_dataframe_by_building,
+    build_room_key,
 )
 
 
@@ -63,10 +66,10 @@ class AppUI:
         self._dwg_path = tk.StringVar()
         self._room_id_col = tk.StringVar()
         self._building_col = tk.StringVar()
+        self._floor_col = tk.StringVar()
         self._building_id = tk.StringVar()
         self._df = None
         self._columns: list[str] = []
-        self._field_vars: dict[str, tk.BooleanVar] = {}
         self._running = False
         self._last_output_dir: str | None = None
 
@@ -133,78 +136,50 @@ class AppUI:
         card = self._card(parent, "Step 2 -- Configure Columns")
 
         # Room Identifier dropdown
-        rid_row = tk.Frame(card, bg=BG_CARD)
-        rid_row.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(rid_row, text="Room Identifier:", bg=BG_CARD, fg=FG_PRIMARY,
-                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
-        self._room_id_combo = ttk.Combobox(
-            rid_row, textvariable=self._room_id_col,
-            state="disabled", font=("Segoe UI", 9), width=30,
-        )
-        self._room_id_combo.pack(side=tk.LEFT)
+        self._room_id_combo = self._column_row(card, "Room Identifier:", self._room_id_col)
 
         # Building Identifier column dropdown
-        bld_row = tk.Frame(card, bg=BG_CARD)
-        bld_row.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(bld_row, text="Building Column:", bg=BG_CARD, fg=FG_PRIMARY,
-                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
-        self._building_col_combo = ttk.Combobox(
-            bld_row, textvariable=self._building_col,
-            state="disabled", font=("Segoe UI", 9), width=30,
-        )
-        self._building_col_combo.pack(side=tk.LEFT)
+        self._building_col_combo = self._column_row(card, "Building Column:", self._building_col)
+
+        # Floor Code column dropdown
+        self._floor_col_combo = self._column_row(card, "Floor Column:", self._floor_col)
 
         self._style_combobox()
 
-        # Fields to insert checklist
-        tk.Label(card, text="Columns to insert into AutoCAD drawing:",
-                 bg=BG_CARD, fg=FG_PRIMARY,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        # What gets written
+        sep = ROOM_KEY_SEPARATOR
+        tk.Label(
+            card,
+            text=(f"Each matched room's boundary is copied onto a layer named\n"
+                  f"[Building]{sep}[Floor]{sep}[Room]   e.g.  0132{sep}01{sep}101"),
+            bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), justify=tk.LEFT,
+        ).pack(anchor="w", pady=(4, 0))
+        self._key_example = tk.Label(card, text="", bg=BG_CARD, fg=FG_SUCCESS,
+                                     font=("Consolas", 9), justify=tk.LEFT)
+        self._key_example.pack(anchor="w")
+        for var in (self._room_id_col, self._building_col, self._floor_col):
+            var.trace_add("write", lambda *_: self._update_key_example())
 
-        scroll_outer = tk.Frame(card, bg=BG_CARD)
-        scroll_outer.pack(fill=tk.BOTH, expand=True)
+    def _column_row(self, card, label: str, variable: tk.StringVar) -> ttk.Combobox:
+        row = tk.Frame(card, bg=BG_CARD)
+        row.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(row, text=label, bg=BG_CARD, fg=FG_PRIMARY, width=16, anchor="w",
+                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        combo = ttk.Combobox(row, textvariable=variable, state="disabled",
+                             font=("Segoe UI", 9), width=30)
+        combo.pack(side=tk.LEFT)
+        return combo
 
-        canvas = tk.Canvas(scroll_outer, bg=BG_CARD, highlightthickness=0, height=110)
-        scrollbar = ttk.Scrollbar(scroll_outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self._checkbox_frame = tk.Frame(canvas, bg=BG_CARD)
-        self._checkbox_window = canvas.create_window(
-            (0, 0), window=self._checkbox_frame, anchor="nw"
-        )
-
-        def _on_frame_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _on_canvas_configure(event):
-            canvas.itemconfig(self._checkbox_window, width=event.width)
-
-        self._checkbox_frame.bind("<Configure>", _on_frame_configure)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        def _on_mousewheel(e):
-            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
-
-        self._columns_canvas = canvas
-
-        # Select all / deselect all
-        btn_row = tk.Frame(card, bg=BG_CARD)
-        btn_row.pack(fill=tk.X, pady=(6, 0))
-        self._btn(btn_row, "Select All", self._select_all_fields,
-                  small=True).pack(side=tk.LEFT, padx=(0, 6))
-        self._btn(btn_row, "Deselect All", self._deselect_all_fields,
-                  small=True).pack(side=tk.LEFT)
-
-        # Placeholder
-        self._no_file_label = tk.Label(
-            self._checkbox_frame, text="Load a spreadsheet file first.",
-            bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9, "italic"),
-        )
-        self._no_file_label.pack(anchor="w", padx=4, pady=4)
+    def _update_key_example(self):
+        """Show the layer name the first spreadsheet row would get."""
+        cols = (self._building_col.get(), self._floor_col.get(), self._room_id_col.get())
+        if self._df is None or self._df.empty or not all(c in self._df.columns for c in cols):
+            self._key_example.configure(text="")
+            return
+        row = self._df.iloc[0]
+        key = build_room_key(row[cols[0]], row[cols[1]], row[cols[2]])
+        self._key_example.configure(
+            text=f"First row -> {key}" if key else "First row -> (a value is empty)")
 
     def _build_run_section(self, parent):
         row = tk.Frame(parent, bg=BG_DARK)
@@ -369,44 +344,17 @@ class AppUI:
         elif self._columns:
             self._building_col.set(self._columns[0])
 
-        self._build_column_checkboxes()
+        # Floor column dropdown
+        self._floor_col_combo.configure(state="readonly", values=self._columns)
+        floor_suggestion = detect_floor_column(self._columns)
+        if floor_suggestion:
+            self._floor_col.set(floor_suggestion)
+            self._log(f"Auto-detected Floor column: '{floor_suggestion}'", tag="SUCCESS")
+        else:
+            self._floor_col.set("")
+            self._log("No Floor column detected -- please choose it in Step 2.", tag="WARN")
 
-    def _build_column_checkboxes(self):
-        for widget in self._checkbox_frame.winfo_children():
-            widget.destroy()
-        self._field_vars.clear()
-
-        if not self._columns:
-            tk.Label(self._checkbox_frame, text="No columns found.",
-                     bg=BG_CARD, fg=FG_SECONDARY,
-                     font=("Segoe UI", 9, "italic")).pack(anchor="w")
-            return
-
-        col_count = 2
-        for idx, col in enumerate(self._columns):
-            var = tk.BooleanVar(value=False)
-            self._field_vars[col] = var
-            cb = tk.Checkbutton(
-                self._checkbox_frame, text=col, variable=var,
-                bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_PANEL,
-                activebackground=BG_CARD, activeforeground=FG_ACCENT,
-                font=("Segoe UI", 9), anchor="w",
-            )
-            cb.grid(row=idx // col_count, column=idx % col_count,
-                    sticky="w", padx=(0, 20))
-
-        self._checkbox_frame.update_idletasks()
-        self._columns_canvas.configure(
-            scrollregion=self._columns_canvas.bbox("all")
-        )
-
-    def _select_all_fields(self):
-        for var in self._field_vars.values():
-            var.set(True)
-
-    def _deselect_all_fields(self):
-        for var in self._field_vars.values():
-            var.set(False)
+        self._update_key_example()
 
     # ------------------------------------------------------------------
     # Run button
@@ -436,10 +384,15 @@ class AppUI:
             messagebox.showwarning("Missing Input", "Please select the Building Identifier column.")
             return
 
-        selected_cols = [col for col, var in self._field_vars.items() if var.get()]
-        if not selected_cols:
+        floor_col = self._floor_col.get()
+        if not floor_col:
+            messagebox.showwarning("Missing Input", "Please select the Floor column.")
+            return
+
+        if len({room_id_col, building_col, floor_col}) < 3:
             messagebox.showwarning(
-                "Missing Input", "Please select at least one column to insert."
+                "Check Columns",
+                "Room, Building and Floor must be three different columns.",
             )
             return
 
@@ -456,7 +409,7 @@ class AppUI:
                 self._df.copy(),
                 room_id_col,
                 building_col,
-                selected_cols,
+                floor_col,
                 output_path,
             ),
             daemon=True,
@@ -504,11 +457,11 @@ class AppUI:
             return path
 
     def _run_annotation(self, dwg_path, df, room_id_col, building_col,
-                        selected_cols, output_path):
+                        floor_col, output_path):
         """Worker thread: full annotation pipeline."""
         from autocad_scanner import AutoCADError, scan_drawing
         from polygon_matcher import associate_texts_with_polygons, match_rooms
-        from annotation_writer import write_annotations
+        from annotation_writer import write_room_layers
         from dwg_converter import (
             ConversionError, dwg_to_dxf, dxf_doc_to_dwg, make_work_dir, remove_work_dir,
         )
@@ -588,7 +541,7 @@ class AppUI:
             self._log("Matching rooms to spreadsheet...", tag="INFO")
             summary = match_rooms(
                 scan.room_texts, associations, filtered_df,
-                room_id_col, selected_cols,
+                room_id_col, [building_col, floor_col, room_id_col],
             )
 
             # --- Preview ---
@@ -616,13 +569,15 @@ class AppUI:
                 self._set_status("Stopped -- no matches found.")
                 return
 
-            # --- Phase 5: Write annotations to in-memory DXF ---
-            self._set_status("Writing block annotations...")
-            self._log("Inserting attributed block annotations...", tag="INFO")
-            annotated_dxf_doc, inserted = write_annotations(
+            # --- Phase 5: Write room layers to in-memory DXF ---
+            self._set_status("Creating room layers...")
+            self._log("Copying room polygons onto Building-Floor-Room layers...", tag="INFO")
+            annotated_dxf_doc, inserted = write_room_layers(
                 dxf_path,
                 summary.results,
-                scan.room_texts,
+                building_col,
+                floor_col,
+                room_id_col,
                 building_id,
                 scan.existing_annotation_room_ids,
                 log_fn=self._log,
@@ -664,19 +619,19 @@ class AppUI:
                 f"  Unmatched rooms      : {unmatched_count}",
                 tag="WARN" if unmatched_count else "INFO",
             )
-            self._log(f"  Annotations inserted : {inserted}", tag="SUCCESS")
+            self._log(f"  Room layers created  : {inserted}", tag="SUCCESS")
             self._log(f"  Output file          : {output_path}", tag="SUCCESS")
             self._log("=" * 56, tag="HEADER")
 
-            self._set_status(f"Done -- {inserted} annotations inserted.")
+            self._set_status(f"Done -- {inserted} room layers created.")
             self._dialog(
                 "info",
                 "Complete",
-                f"Annotation complete!\n\n"
+                f"Room layers complete!\n\n"
                 f"Building        : {building_id}\n"
                 f"Polygon links   : {summary.texts_with_polygon}\n"
                 f"Matched rooms   : {summary.matched_count}\n"
-                f"Inserted        : {inserted}\n"
+                f"Layers created  : {inserted}\n"
                 f"Output saved to :\n{output_path}",
             )
 

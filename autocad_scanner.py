@@ -5,7 +5,7 @@ Uses **ezdxf** to scan a DXF file and collect:
 
   1. Room identifier TEXT / MTEXT entities
   2. Closed polyline (room polygon) candidates
-  3. Existing block-insert annotations (for dedup)
+  3. Room-layer polygon copies written by a previous run (for dedup)
 
 The DXF file is produced from the original DWG by ``dwg_converter.py``.
 All entity properties are cached into plain Python dataclasses.
@@ -20,10 +20,8 @@ from typing import Callable
 import ezdxf
 
 from config import (
-    BLOCK_LAYER,
-    BLOCK_OUTLINE_LAYER,
     DEFAULT_TEXT_HEIGHT,
-    OUTPUT_LAYER,
+    LEGACY_OUTLINE_LAYERS,
     SCAN_PROGRESS_INTERVAL,
     XDATA_APP_NAME,
 )
@@ -141,9 +139,6 @@ def scan_drawing(
         elif etype in ("LWPOLYLINE", "POLYLINE"):
             _process_polygon_entity(entity, etype, result)
 
-        elif etype == "INSERT":
-            _process_block_dedup(entity, result)
-
     _log(log_fn, f"    ...scan complete ({total} entities)")
     _log(log_fn, f"  Room identifiers found : {len(result.room_texts)}")
     _log(log_fn, f"  Polygon candidates     : {len(result.polygons)}")
@@ -175,11 +170,6 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
         return
 
     layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
-
-    # Dedup: check for existing MTEXT annotations on OUTPUT_LAYER
-    if layer == OUTPUT_LAYER and etype == "MTEXT":
-        _record_existing_annotation(entity, result)
-        return
 
     if not is_room_identifier(text_val):
         return
@@ -233,8 +223,12 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
         return
 
     layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
-    # Outline copies written by a previous run are not room boundaries
-    if layer == BLOCK_OUTLINE_LAYER:
+    # Outlines from the old block-based versions are not room boundaries
+    if layer in LEGACY_OUTLINE_LAYERS:
+        return
+    # A polygon carrying our XData is a room-layer copy from a previous run:
+    # record its room (so it is not written twice) instead of scanning it
+    if _record_existing_annotation(entity, result):
         return
 
     if not closed:
@@ -272,31 +266,15 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
     ))
 
 
-def _record_existing_annotation(entity, result: ScanResult) -> None:
-    """Record the room_id of an entity carrying our XData (a previous annotation)."""
+def _record_existing_annotation(entity, result: ScanResult) -> bool:
+    """If *entity* carries our XData, record its room_id and return True."""
     meta = read_xdata(entity)
-    if meta is not None:
-        room_id = normalize_room_id(meta.room_id)
-        if room_id:
-            result.existing_annotation_room_ids.add(room_id)
-
-
-def _process_block_dedup(entity, result: ScanResult) -> None:
-    """Check if a block INSERT on BLOCK_LAYER is an existing annotation (dedup)."""
-    layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
-    if layer != BLOCK_LAYER:
-        return
-
-    if read_xdata(entity) is not None:
-        _record_existing_annotation(entity, result)
-        return
-
-    # Fallback (XData stripped by another tool): a ROOM_IDENTIFIER attribute
-    attrib = entity.get_attrib("ROOM_IDENTIFIER")
-    if attrib is not None:
-        rid = normalize_room_id(attrib.dxf.text)
-        if rid:
-            result.existing_annotation_room_ids.add(rid)
+    if meta is None:
+        return False
+    room_id = normalize_room_id(meta.room_id)
+    if room_id:
+        result.existing_annotation_room_ids.add(room_id)
+    return True
 
 
 # ---------------------------------------------------------------------------

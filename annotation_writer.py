@@ -1,17 +1,18 @@
 """
 annotation_writer.py
 --------------------
-Inserts **attributed block** annotations into a DXF file using **ezdxf**
-so that ArcGIS can read room data as structured field attributes.
+Writes **room layers** into a DXF file using **ezdxf**, for ArcGIS.
 
 Each matched room gets:
-  a. A block definition with one ATTDEF per selected column.
-  b. A block insert (INSERT) at the room text position.
-  c. Attribute values populated from the spreadsheet.
-  d. An outline LWPOLYLINE rectangle around the attributes.
-  e. XData on the block insert for internal querying.
+  a. A layer named ``<Building>-<Floor>-<Room>`` (e.g. ``0132-01-101``), with
+     the three values taken as-is from the matched spreadsheet row.
+  b. A copy of the room's boundary polygon on that layer. The original
+     polygon and its layer are left untouched.
+  c. XData on the copy linking it to the source polygon and room label
+     (also used to skip rooms that already have a layer on a re-run).
 
-The public function signature is kept compatible with the UI pipeline.
+In ArcGIS each room polygon then carries its key in the Layer field, which
+can be joined to the facilities spreadsheet.
 """
 
 from __future__ import annotations
@@ -21,145 +22,89 @@ from typing import Callable
 
 import ezdxf
 
-from config import (
-    ANNOTATION_COLOR,
-    ATTR_LINE_SPACING,
-    ATTR_TEXT_HEIGHT_FACTOR,
-    BLOCK_LAYER,
-    BLOCK_OUTLINE_LAYER,
-    BLOCK_PADDING,
-    DEFAULT_TEXT_HEIGHT,
-)
-from metadata_utils import (
-    AnnotationMetadata,
-    normalize_block_name,
-    register_xdata_app,
-    write_xdata,
-)
-from utils import build_attribute_map
+from config import ROOM_LAYER_COLOR
+from metadata_utils import AnnotationMetadata, register_xdata_app, write_xdata
+from utils import build_room_key, normalize_room_id
+
+_LIST_LIMIT = 10    # max room IDs listed per warning in the log
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def write_annotations(
+def write_room_layers(
     dxf_path: str,
     matches: list,
-    room_texts: list,
+    building_col: str,
+    floor_col: str,
+    room_col: str,
     building_id: str,
     existing_annotation_ids: set[str],
     log_fn: Callable[[str], None] | None = None,
 ) -> tuple[ezdxf.document.Drawing, int]:
-    """Insert attributed block annotations and save the DXF.
+    """Copy each matched room's polygon onto its own ``Building-Floor-Room`` layer.
 
     Parameters
     ----------
     dxf_path : str
         Path to the DXF file (produced by dwg_converter).
     matches : list[RoomMatch]
-        From polygon_matcher.match_rooms.
-    room_texts : list[RoomText]
-        All scanned room texts (used to look up position / height).
+        From polygon_matcher.match_rooms; ``row_data`` must contain
+        *building_col*, *floor_col* and *room_col*.
+    building_col, floor_col, room_col : str
+        Spreadsheet columns that make up the layer name.
     building_id : str
-        Building identifier for metadata.
+        Building identifier (from the filename) for metadata.
     existing_annotation_ids : set[str]
-        Normalised room IDs that already have annotations (for dedup).
+        Normalised room IDs that already have a room layer (for dedup).
     log_fn : callable, optional
 
     Returns
     -------
-    (annotated_doc, inserted_count)
+    (annotated_doc, created_count)
         The annotated in-memory drawing; the caller saves or converts it.
     """
     abs_path = os.path.abspath(dxf_path)
-    _log(log_fn, f"Opening DXF for annotation: {os.path.basename(abs_path)}")
-
+    _log(log_fn, f"Opening DXF for room layers: {os.path.basename(abs_path)}")
     try:
         doc = ezdxf.readfile(abs_path)
     except Exception as exc:
-        raise RuntimeError(
-            f"Failed to read DXF file:\n{abs_path}\nError: {exc}"
-        ) from exc
+        raise RuntimeError(f"Failed to read DXF file:\n{abs_path}\nError: {exc}") from exc
 
     msp = doc.modelspace()
-
-    _log(log_fn, "  Preparing layers and metadata registration...")
-    _ensure_layer(doc, BLOCK_LAYER, ANNOTATION_COLOR)
-    _ensure_layer(doc, BLOCK_OUTLINE_LAYER, ANNOTATION_COLOR)
     register_xdata_app(doc)
 
-    # Build a quick lookup: normalised room_id -> RoomText
-    text_lookup: dict[str, object] = {}
-    for rt in room_texts:
-        key = rt.text.strip().lower()
-        if key not in text_lookup:
-            text_lookup[key] = rt
-
-    # Collect selected columns from the first matched entry
-    selected_columns: list[str] = []
-    for match in matches:
-        if match.matched and match.row_data:
-            selected_columns = list(match.row_data.keys())
-            break
-
-    if not selected_columns:
-        _log(log_fn, "  WARNING: No matched rows with data to insert.")
-        return doc, 0
-
-    # Track created block definitions
-    created_blocks: set[str] = set()
-
-    inserted = 0
-    skipped_dedup = 0
+    created = 0
+    already_done: list[str] = []
+    no_polygon: list[str] = []
+    missing_key: list[str] = []
+    nearest: list[str] = []
+    failed: list[str] = []
+    rooms_by_polygon: dict[str, list[str]] = {}
 
     for match in matches:
-        if not match.matched or not match.row_data:
+        if not match.matched:
             continue
 
-        norm_id = match.room_id.strip().lower()
-
-        if norm_id in existing_annotation_ids:
-            skipped_dedup += 1
+        if normalize_room_id(match.room_id) in existing_annotation_ids:
+            already_done.append(match.room_id)
             continue
 
-        rt = text_lookup.get(norm_id)
-        if rt is None:
+        if len(match.polygon_vertices) < 3:
+            no_polygon.append(match.room_id)
             continue
 
-        text_height = (rt.text_height or DEFAULT_TEXT_HEIGHT) * ATTR_TEXT_HEIGHT_FACTOR
-        attr_map = build_attribute_map(selected_columns, match.row_data)
-        if not attr_map:
+        row = match.row_data
+        layer_name = build_room_key(row.get(building_col), row.get(floor_col),
+                                    row.get(room_col))
+        if layer_name is None:
+            missing_key.append(match.room_id)
             continue
-
-        ins_x = rt.position[0]
-        ins_y = rt.position[1] - (text_height * ATTR_LINE_SPACING)
-        ins_z = rt.position[2] if len(rt.position) > 2 else 0.0
-
-        block_name = normalize_block_name(match.room_id)
 
         try:
-            # --- a. Block definition ---
-            if block_name not in created_blocks:
-                if block_name not in doc.blocks:
-                    _create_block_def(
-                        doc, block_name, ins_x, ins_y,
-                        attr_map, text_height,
-                    )
-                created_blocks.add(block_name)
-
-            # --- b. Block insert + c. Set attribute values ---
-            block_ref = _insert_block_with_attribs(
-                msp, doc, block_name, ins_x, ins_y, ins_z,
-                attr_map,
-            )
-
-            # --- d. Outline (polygon shape or rectangle fallback) ---
-            _draw_outline(
-                msp, match.polygon_vertices, ins_x, ins_y, len(attr_map), text_height,
-            )
-
-            # --- e. XData ---
+            _ensure_layer(doc, layer_name, ROOM_LAYER_COLOR)
+            copy = _add_polygon(doc, msp, match.polygon_vertices, layer_name)
             meta = AnnotationMetadata(
                 room_id=match.room_id,
                 polygon_handle=match.polygon_handle,
@@ -167,157 +112,56 @@ def write_annotations(
                 text_handle=match.text_handle,
                 match_method=match.match_method,
             )
-            if not write_xdata(block_ref, meta):
+            if not write_xdata(copy, meta):
                 _log(log_fn, f"  WARNING: Could not attach metadata (XData) for {match.room_id}")
-
-            inserted += 1
-
         except Exception as exc:
-            _log(log_fn, f"  WARNING: Failed to insert block for {match.room_id}: {exc}")
+            failed.append(f"{match.room_id} ({exc})")
+            continue
 
-    if skipped_dedup:
-        _log(log_fn, f"  Skipped {skipped_dedup} rooms (annotations already exist)")
+        created += 1
+        rooms_by_polygon.setdefault(match.polygon_handle, []).append(match.room_id)
+        if match.match_method == "nearest":
+            nearest.append(match.room_id)
 
-    # Return the in-memory DXF document (don't save to disk)
-    # The caller will handle DXF->DWG conversion
-    _log(log_fn, f"  Block annotations inserted: {inserted}")
-    return doc, inserted
+    _log(log_fn, f"  Room layers created: {created}")
+    _log_list(log_fn, already_done, "rooms skipped -- a room layer already exists", warn=False)
+    _log_list(log_fn, no_polygon, "rooms skipped -- no room boundary polygon found")
+    _log_list(log_fn, missing_key,
+              f"rooms skipped -- empty '{building_col}', '{floor_col}' or '{room_col}' value")
+    _log_list(log_fn, failed, "rooms failed")
+    _log_list(log_fn, nearest,
+              "rooms linked to the NEAREST polygon (label outside any polygon) -- please check")
+    shared = [f"{', '.join(r)}" for r in rooms_by_polygon.values() if len(r) > 1]
+    _log_list(log_fn, shared, "polygons shared by more than one room label -- please check")
 
-
-# ---------------------------------------------------------------------------
-# Block definition (ezdxf)
-# ---------------------------------------------------------------------------
-
-def _create_block_def(
-    doc, block_name: str,
-    origin_x: float, origin_y: float,
-    attr_map: list[tuple[str, str, str]],
-    text_height: float,
-) -> None:
-    """Create a block definition with one ATTDEF per attribute."""
-    block = doc.blocks.new(name=block_name)
-
-    for i, (tag, prompt, default_val) in enumerate(attr_map):
-        y_offset = -(i * text_height * ATTR_LINE_SPACING)
-        block.add_attdef(
-            tag=tag,
-            insert=(0, y_offset, 0),
-            dxfattribs={
-                "height": text_height,
-                "prompt": prompt,
-                "layer": BLOCK_LAYER,
-            },
-        )
-
-
-# ---------------------------------------------------------------------------
-# Block insert + attribute population (ezdxf)
-# ---------------------------------------------------------------------------
-
-def _insert_block_with_attribs(
-    msp, doc, block_name: str,
-    x: float, y: float, z: float,
-    attr_map: list[tuple[str, str, str]],
-):
-    """Insert a block reference and fill its attributes. Returns the INSERT entity."""
-    block_ref = msp.add_blockref(
-        block_name,
-        insert=(x, y, z),
-        dxfattribs={"layer": BLOCK_LAYER},
-    )
-
-    # Build tag -> value map
-    tag_to_value: dict[str, str] = {}
-    for tag, _prompt, value in attr_map:
-        tag_to_value[tag.upper()] = value
-
-    # Add ATTRIB entities from the block's ATTDEFs
-    block_def = doc.blocks.get(block_name)
-    if block_def is not None:
-        for attdef in block_def.query("ATTDEF"):
-            tag = attdef.dxf.tag.upper()
-            value = tag_to_value.get(tag, "")
-            block_ref.add_attrib(
-                tag=attdef.dxf.tag,
-                text=value,
-                insert=(
-                    x + attdef.dxf.insert.x,
-                    y + attdef.dxf.insert.y,
-                    z,
-                ),
-                dxfattribs={
-                    "height": attdef.dxf.height,
-                    "layer": BLOCK_LAYER,
-                },
-            )
-
-    return block_ref
-
-
-# ---------------------------------------------------------------------------
-# Outline rectangle (ezdxf)
-# ---------------------------------------------------------------------------
-
-def _draw_outline(
-    msp,
-    polygon_vertices: list[tuple[float, float]],
-    x: float, y: float,
-    num_fields: int,
-    text_height: float,
-) -> None:
-    """Draw the room polygon as an outline. Falls back to rectangle if no polygon."""
-    # If polygon vertices provided, draw the actual room shape
-    if polygon_vertices and len(polygon_vertices) >= 3:
-        points = [(vx, vy, 0) for vx, vy in polygon_vertices]
-        try:
-            msp.add_lwpolyline(
-                points,
-                close=True,
-                dxfattribs={"layer": BLOCK_OUTLINE_LAYER},
-            )
-        except Exception:
-            # Fallback to POLYLINE for older DXF versions
-            msp.add_polyline2d(
-                points,
-                dxfattribs={"layer": BLOCK_OUTLINE_LAYER},
-            ).close()
-    else:
-        # Fallback: draw a rectangle around the block attributes
-        padding = BLOCK_PADDING * text_height
-        estimated_width = text_height * 25.0
-
-        x_min = x - padding
-        x_max = x + estimated_width + padding
-        y_max = y + text_height + padding
-        y_min = y - (num_fields * text_height * ATTR_LINE_SPACING) - padding
-
-        points = [
-            (x_min, y_max, 0),
-            (x_max, y_max, 0),
-            (x_max, y_min, 0),
-            (x_min, y_min, 0),
-        ]
-        try:
-            msp.add_lwpolyline(
-                points,
-                close=True,
-                dxfattribs={"layer": BLOCK_OUTLINE_LAYER},
-            )
-        except Exception:
-            msp.add_polyline2d(
-                points,
-                dxfattribs={"layer": BLOCK_OUTLINE_LAYER},
-            ).close()
+    return doc, created
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _add_polygon(doc, msp, vertices: list[tuple[float, float]], layer: str):
+    """Add a closed copy of *vertices* on *layer*; LWPOLYLINE unless the DXF is R12."""
+    attribs = {"layer": layer}
+    if doc.dxfversion > "AC1009":
+        return msp.add_lwpolyline(vertices, close=True, dxfattribs=attribs)
+    return msp.add_polyline2d(vertices, close=True, dxfattribs=attribs)
+
+
 def _ensure_layer(doc, layer_name: str, color: int) -> None:
     """Create the layer if it doesn't exist."""
     if layer_name not in doc.layers:
         doc.layers.add(layer_name, color=color)
+
+
+def _log_list(log_fn, items: list[str], what: str, warn: bool = True) -> None:
+    if not items:
+        return
+    shown = ", ".join(items[:_LIST_LIMIT])
+    more = f" (+{len(items) - _LIST_LIMIT} more)" if len(items) > _LIST_LIMIT else ""
+    prefix = "WARNING: " if warn else ""
+    _log(log_fn, f"  {prefix}{len(items)} {what}: {shown}{more}")
 
 
 # ---------------------------------------------------------------------------

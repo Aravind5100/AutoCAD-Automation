@@ -7,8 +7,9 @@ Column normalisation, building ID, room-identifier heuristic, geometry.
 import unittest
 
 from utils import (
-    build_attribute_map,
+    build_room_key,
     detect_building_column,
+    detect_floor_column,
     extract_building_id,
     is_room_identifier,
     normalize_col,
@@ -83,13 +84,24 @@ class TestGeometry(unittest.TestCase):
         self.assertEqual(polygon_centroid([(0, 0), (2, 0), (4, 0)]), (2.0, 0.0))
 
 
-class TestAttributeMap(unittest.TestCase):
+class TestRoomKey(unittest.TestCase):
 
-    def test_tags_prompts_values(self):
-        result = build_attribute_map(["Occupied By", "Sq.Ft."],
-                                     {"Occupied By": "J. Smith", "Sq.Ft.": "230"})
-        self.assertEqual(result, [("OCCUPIED_BY", "Occupied By", "J. Smith"),
-                                  ("SQ_FT", "Sq.Ft.", "230")])
+    def test_values_joined_as_is(self):
+        self.assertEqual(build_room_key("0132", "01", "101"), "0132-01-101")
+        self.assertEqual(build_room_key("0132", "1", "102A"), "0132-1-102A")
+        self.assertEqual(build_room_key(" engr ", "B1", "LAB-101"), "engr-B1-LAB-101")
+
+    def test_forbidden_layer_characters_replaced(self):
+        self.assertEqual(build_room_key("0132", "1/2", 'R<1>:"x"'), "0132-1_2-R_1___x_")
+
+    def test_empty_part_gives_none(self):
+        for parts in (("", "01", "101"), ("0132", " ", "101"), ("0132", "01", None)):
+            self.assertIsNone(build_room_key(*parts), parts)
+
+    def test_floor_column_detected(self):
+        self.assertEqual(detect_floor_column(["Bldg", "Floor_Code", "Room"]), "Floor_Code")
+        self.assertEqual(detect_floor_column(["Bldg", "FLR", "Room"]), "FLR")
+        self.assertIsNone(detect_floor_column(["Bldg", "Room"]))
 
 
 if __name__ == "__main__":

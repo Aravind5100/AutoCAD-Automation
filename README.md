@@ -2,8 +2,8 @@
 
 A Python desktop application that reads room data from a spreadsheet (CSV/Excel),
 scans an AutoCAD DWG drawing for room identifiers and polygons, matches them,
-and inserts ArcGIS-compatible attributed block annotations — without overwriting
-the original file.
+and copies each matched room's boundary onto its own **ArcGIS-ready layer** named
+`[Building]-[Floor]-[Room]` (e.g. `0132-01-101`) — without overwriting the original file.
 
 ---
 
@@ -32,7 +32,7 @@ the original file.
 2. Double-click  setup.bat        (one-time setup — installs dependencies)
 3. Open AutoCAD and load your DWG file
 4. Double-click  run.bat           (launches the application)
-5. Select your spreadsheet, DWG file, choose columns, click "Run Annotation"
+5. Select your spreadsheet and DWG file, check the Room / Building / Floor columns, click "Run Annotation"
 6. Choose where to save the result (suggested name: <original_name>_annotated.dwg)
 ```
 
@@ -154,14 +154,18 @@ Click **"Browse"** next to the drawing field and select your `.dwg` file.
 
 ### 3. Choose Column Mappings
 
-The application will auto-detect columns:
-- **Room Identifier Column** — the column containing room numbers (e.g., "Room ID", "Room Number")
-- **Building Column** — the column containing building codes (e.g., "Building ID", "Bldg")
+The application will auto-detect three columns (change them in the drop-downs if needed):
+- **Room Identifier** — room numbers (e.g., "Room ID", "Room Number")
+- **Building Column** — building codes (e.g., "Building ID", "Bldg")
+- **Floor Column** — floor codes (e.g., "Floor", "Floor Code", "Flr", "Level")
 
-### 4. Select Columns to Annotate
+The three must be different columns.
 
-Check the boxes for which spreadsheet columns you want inserted into the drawing.
-For example: Department, Occupied By, Square Footage, etc.
+### 4. Check the Layer Name
+
+Each matched room is written to a layer named **`[Building]-[Floor]-[Room]`**, using the
+values exactly as they appear in the spreadsheet. Below the drop-downs, the app shows the
+name the first spreadsheet row would get (e.g. `First row -> 0132-01-101`).
 
 ### 5. Click "Run Annotation"
 
@@ -174,7 +178,7 @@ The tool will then:
 2. Scan the drawing for room texts and room boundary polygons
 3. Match room texts to polygons (point-in-polygon test)
 4. Match rooms to spreadsheet data
-5. Insert attributed block annotations
+5. Copy each matched room's boundary polygon onto its `Building-Floor-Room` layer
 6. Convert back to DWG and save it to the location you chose
 
 ### 6. Check the Output
@@ -204,7 +208,7 @@ DWG File (input)
 [Match rooms to spreadsheet]  -- Room IDs matched case-insensitively
   |
   v
-[ezdxf: Insert blocks]        -- Attributed blocks + outlines added to DXF
+[ezdxf: Room layers]         -- Room polygon copies on Building-Floor-Room layers
   |
   v
 [AutoCAD COM: SaveAs DWG]     -- AutoCAD converts back to DWG format
@@ -266,7 +270,7 @@ The spreadsheet is filtered to only rows matching this building ID before matchi
 
 | File | Description |
 |---|---|
-| `<name>_annotated.dwg` (name and folder are your choice) | The annotated drawing with all block inserts, saved as a native AutoCAD 2018 DWG. |
+| `<name>_annotated.dwg` (name and folder are your choice) | The original drawing plus one `Building-Floor-Room` layer per matched room, saved as a native AutoCAD 2018 DWG. |
 
 The original DWG is **never modified**, and nothing is written next to it:
 
@@ -278,43 +282,48 @@ The original DWG is **never modified**, and nothing is written next to it:
 - AutoCAD's dialog settings (FILEDIA, CMDDIA, PROXYNOTICE) are switched off only
   while converting and **restored** afterwards.
 
-**Running again is safe:** rooms that already have an annotation in the drawing
+**Running again is safe:** rooms that already have a room layer in the drawing
 are skipped (the log reports how many).
 
 ---
 
 ## ArcGIS Compatibility
 
-Annotations are inserted as **AutoCAD attributed blocks** (INSERT entities with ATTRIB attributes).
-When this DWG is imported into ArcGIS, room attributes appear as structured fields in the attribute table.
+Room data is delivered through **layers**, which ArcGIS handles better than blocks when
+it imports a CAD drawing. Every matched room gets its own layer:
 
-### How to Import in ArcGIS
+```
+<Building>-<Floor>-<Room>        e.g.  0132-01-101
+```
 
-1. **Add Data** → select the `_annotated.dwg` file
-2. Choose the `ROOM_DATA` layer (this contains the block inserts)
-3. **Open Attribute Table** → all room fields are populated automatically
+- The three values are taken **as-is** from the matched spreadsheet row (so `01` stays
+  `01`, and `1` stays `1`), which keeps the name identical to your facilities data.
+- The layer holds a **copy** of the room's boundary polygon. The original polygon and
+  the drawing's own layers are not changed.
+- Characters AutoCAD does not allow in layer names (`< > / \ " : ; ? * | = `` ` ``) are
+  replaced with `_`.
+- No blocks or attribute values are written.
 
-### Example Attribute Table in ArcGIS
+### How to Use It in ArcGIS
 
-| ROOM_ID | DEPARTMENT | OCCUPIED_BY | BUILDING |
-|---------|-----------|-------------|----------|
-| 1000 | Engineering | John Smith | 0132 |
-| 1001 | Admin | Jane Doe | 0132 |
+1. **Add Data** → select the annotated `.dwg` file → choose its **Polygon** feature class.
+2. Each room polygon's **Layer** field holds its key, e.g. `0132-01-101`.
+3. To bring in other spreadsheet columns (department, occupant, area, ...), **join** your
+   spreadsheet to the polygons on that key. Build the same key in the spreadsheet by
+   combining the Building, Floor and Room columns with `-`.
 
-### What Gets Created per Room
+### When a Room Is Skipped
 
-- **Block definition:** `ROOM_BLOCK_<ROOM_ID>` with one attribute per selected column
-- **Block insert:** Placed on `ROOM_DATA` layer at the room text position
-- **Outline:** Closed polyline on `ROOM_BLOCK_OUTLINE` layer matching room polygon shape
-- **XData:** `ROOM_INFO_AI` metadata on the block insert for internal querying
+The log lists every room that did not get a layer, and why:
 
-### ArcGIS Naming Rules Enforced
+| Log message | Meaning |
+|---|---|
+| no room boundary polygon found | The room label is not inside (or near) any closed polyline |
+| empty Building / Floor / Room value | One of the three spreadsheet values is blank |
+| a room layer already exists | The drawing was already processed for this room |
 
-- Block names: alphanumeric + underscore only, max 255 characters
-- Attribute tags: alphanumeric + underscore only, max 30 characters
-- Layer names: alphanumeric + underscore only
-- Static attributed blocks only (no dynamic blocks)
-- Original coordinate system preserved exactly
+It also flags rooms worth checking: labels linked to the **nearest** polygon (label outside
+any polygon) and polygons that contain **more than one** room label.
 
 ---
 
@@ -330,14 +339,12 @@ All tuneable values are in `config.py`. You can edit this file with any text edi
 | `CSV_HEADER_ROW` | `0` | 0-indexed header row for CSV (0 = 1st row) |
 | `BUILDING_ID_LENGTH` | `4` | Number of characters from filename for building ID |
 
-### Annotation Appearance
+### Room Layers
 
 | Constant | Default | Description |
 |---|---|---|
-| `ANNOTATION_COLOR` | `3` | AutoCAD color index (3 = green) |
-| `DEFAULT_TEXT_HEIGHT` | `10.0` | Fallback text height if not detected |
-| `ATTR_LINE_SPACING` | `1.6` | Vertical spacing between attribute lines |
-| `BLOCK_PADDING` | `0.5` | Padding inside outline rectangle |
+| `ROOM_KEY_SEPARATOR` | `-` | Separator between Building, Floor and Room in layer names |
+| `ROOM_LAYER_COLOR` | `3` | AutoCAD color index of the room layers (3 = green) |
 
 ### Polygon Detection
 
@@ -346,13 +353,6 @@ All tuneable values are in `config.py`. You can edit this file with any text edi
 | `MIN_POLYGON_AREA` | `1.0` | Ignore polygons smaller than this |
 | `ENABLE_NEAREST_FALLBACK` | `True` | Use nearest polygon when none contains text |
 | `MAX_NEAREST_DISTANCE` | `500.0` | Max centroid distance for nearest fallback |
-
-### Layer Names
-
-| Constant | Default | Description |
-|---|---|---|
-| `BLOCK_LAYER` | `ROOM_DATA` | Layer for block inserts and attributes |
-| `BLOCK_OUTLINE_LAYER` | `ROOM_BLOCK_OUTLINE` | Layer for room outlines |
 
 ---
 
@@ -433,11 +433,11 @@ This means the scanner didn't detect any room number text. Possible causes:
 - Check for different formatting (e.g., `Room 101` in spreadsheet vs `101` in drawing)
 - Matching is **case-insensitive** and **whitespace-trimmed**
 
-#### "WARNING: Failed to insert block for ..."
+#### "WARNING: ... rooms skipped" or "... rooms failed"
 
-- Usually a DXF format compatibility issue
-- Check the application log for the specific error message
-- This is non-fatal — other rooms will still be annotated
+- See **When a Room Is Skipped** under ArcGIS Compatibility for what each message means
+- The log lists the affected room numbers
+- This is non-fatal — other rooms still get their layers
 
 ### Still Having Issues?
 
@@ -458,10 +458,10 @@ AutoCAD-Annotator/
   config.py                 # All configurable constants (edit with Notepad)
   ui.py                     # Tkinter GUI (dark theme, log panel, progress bar)
   dwg_converter.py          # DWG <-> DXF conversion via AutoCAD COM (minimal)
-  autocad_scanner.py        # Scans DXF for room texts, polygons, existing blocks
+  autocad_scanner.py        # Scans DXF for room texts, polygons, existing room layers
   polygon_matcher.py        # Associates room text with room polygons + spreadsheet
-  annotation_writer.py      # Inserts attributed blocks with polygon outlines
-  metadata_utils.py         # XData read/write for annotation metadata
+  annotation_writer.py      # Copies room polygons onto Building-Floor-Room layers
+  metadata_utils.py         # XData linking each copy to its source polygon
   spreadsheet_loader.py     # CSV / XLS / XLSX file loading
   utils.py                  # Normalization, heuristics, geometry helpers
   requirements.txt          # Python package dependencies
@@ -499,7 +499,8 @@ known, not-yet-fixed limitations; they are reported but do not fail the run.
 - Room identifiers must be **standalone TEXT or MTEXT** entities (not block attributes).
 - Room polygons must be **closed POLYLINE or LWPOLYLINE** entities.
 - Only **Model Space** is scanned (Paper Space is ignored).
-- The first occurrence of each room ID is used for annotation placement.
+- The first occurrence of each room ID in the drawing is used.
+- Rooms must have a **Floor** value in the spreadsheet to get a layer.
 - The **first 4 characters** of the DWG filename are used as the building identifier.
 - The original DWG file is **never modified** — output is always a new file, saved where you choose.
 

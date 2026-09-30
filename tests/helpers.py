@@ -14,19 +14,22 @@ import unittest
 
 import ezdxf
 
-from annotation_writer import write_annotations
+from annotation_writer import write_room_layers
 from autocad_scanner import scan_drawing
 from polygon_matcher import associate_texts_with_polygons, match_rooms
 from spreadsheet_loader import load_spreadsheet
 from utils import extract_building_id, filter_dataframe_by_building
 
 ROOMS_CSV = (
-    "Building ID,Room Number,Department\n"
-    "0132,101,Eng\n"
-    "0132,102,Admin\n"
-    "0132,103,Lab\n"
-    "9999,101,Other building\n"
+    "Building ID,Floor,Room Number,Department\n"
+    "0132,01,101,Eng\n"
+    "0132,01,102,Admin\n"
+    "0132,1,103,Lab\n"
+    "9999,01,101,Other building\n"
 )
+
+# Layer names the plan + ROOMS_CSV must produce (values used as-is)
+EXPECTED_LAYERS = {"0132-01-101": "101", "0132-01-102": "102", "0132-1-103": "103"}
 
 
 class TempDirTestCase(unittest.TestCase):
@@ -80,19 +83,30 @@ def _add_closed(msp, points, version):
         msp.add_lwpolyline(points, close=True)
 
 
-def run_pipeline(drawing_path: str, sheet_path: str, columns=("Department",),
-                 log=None):
+def run_pipeline(drawing_path: str, sheet_path: str, log=None,
+                 building_col="Building ID", floor_col="Floor", room_col="Room Number"):
     """Scan → associate → match → write, as ``AppUI._run_annotation`` does.
 
-    Returns (scan, summary, annotated_doc, inserted_count).
+    Returns (scan, summary, annotated_doc, created_count).
     """
     df = load_spreadsheet(sheet_path)
-    df = filter_dataframe_by_building(df, "Building ID", extract_building_id(drawing_path))
+    df = filter_dataframe_by_building(df, building_col, extract_building_id(drawing_path))
     scan = scan_drawing(drawing_path, log_fn=log)
     assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons, log_fn=log)
-    summary = match_rooms(scan.room_texts, assoc, df, "Room Number", list(columns))
-    doc, inserted = write_annotations(
-        drawing_path, summary.results, scan.room_texts, "0132",
+    summary = match_rooms(scan.room_texts, assoc, df, room_col,
+                          [building_col, floor_col, room_col])
+    doc, created = write_room_layers(
+        drawing_path, summary.results, building_col, floor_col, room_col, "0132",
         scan.existing_annotation_room_ids, log_fn=log,
     )
-    return scan, summary, doc, inserted
+    return scan, summary, doc, created
+
+
+def room_layer_polygons(doc) -> dict[str, list]:
+    """{layer name: [polygon entities]} for every layer written by the tool."""
+    from metadata_utils import read_xdata
+    result: dict[str, list] = {}
+    for e in doc.modelspace().query("LWPOLYLINE POLYLINE"):
+        if read_xdata(e) is not None:
+            result.setdefault(e.dxf.layer, []).append(e)
+    return result

@@ -9,7 +9,15 @@ import os
 import unittest
 from unittest import mock
 
-from tests.helpers import ROOMS_CSV, TempDirTestCase, make_plan
+import ezdxf
+
+from tests.helpers import (
+    EXPECTED_LAYERS,
+    ROOMS_CSV,
+    TempDirTestCase,
+    make_plan,
+    room_layer_polygons,
+)
 
 try:
     import tkinter as tk
@@ -75,6 +83,31 @@ class TestAskOutputPath(UITestCase):
         self.assertEqual(dialog.call_args.kwargs["filetypes"], [("DXF files", "*.dxf")])
 
 
+class TestColumns(UITestCase):
+
+    def test_columns_detected_and_key_previewed(self):
+        sheet = self.write_text("rooms.csv", ROOMS_CSV)
+        with mock.patch.object(self.app, "_log"):
+            self.app._load_spreadsheet_columns(sheet)
+        self.assertEqual((self.app._room_id_col.get(), self.app._building_col.get(),
+                          self.app._floor_col.get()), ("Room Number", "Building ID", "Floor"))
+        self.assertEqual(self.app._key_example.cget("text"), "First row -> 0132-01-101")
+
+    def test_same_column_twice_refused(self):
+        self.app._spreadsheet_path.set("s.csv")
+        self.app._dwg_path.set("0132_X.dwg")
+        self.app._df = load_spreadsheet(self.write_text("rooms.csv", ROOMS_CSV))
+        for var, value in ((self.app._room_id_col, "Room Number"),
+                           (self.app._building_col, "Building ID"),
+                           (self.app._floor_col, "Room Number")):
+            var.set(value)
+        with mock.patch.object(ui.messagebox, "showwarning") as warn, \
+                mock.patch.object(self.app, "_ask_output_path") as ask:
+            self.app._on_run()
+        warn.assert_called_once()
+        ask.assert_not_called()
+
+
 class TestRunAnnotation(UITestCase):
 
     def test_dialog_scheduled_on_main_thread_B6(self):
@@ -92,10 +125,11 @@ class TestRunAnnotation(UITestCase):
         with mock.patch.object(self.app, "_log", lambda m, tag="INFO": logs.append((tag, m))), \
                 mock.patch.object(self.app, "_dialog", lambda *a: dialogs.append(a[:2])):
             self.app._run_annotation(plan, df, "Room Number", "Building ID",
-                                     ["Department"], out)
+                                     "Floor", out)
         self.assertTrue(os.path.exists(out))
         self.assertEqual(dialogs, [("info", "Complete")])
-        self.assertTrue(any("Annotations inserted : 3" in m for _, m in logs), logs)
+        self.assertTrue(any("Room layers created  : 3" in m for _, m in logs), logs)
+        self.assertEqual(set(room_layer_polygons(ezdxf.readfile(out))), set(EXPECTED_LAYERS))
         self.assertEqual(sorted(os.listdir(self.tmp)), before)   # nothing new beside input
         self.assertFalse([m for t, m in logs if t == "ERROR"])
 

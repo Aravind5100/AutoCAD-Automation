@@ -12,10 +12,12 @@ import re
 
 from config import (
     BUILDING_ID_LENGTH,
+    LAYER_NAME_FORBIDDEN_CHARS,
     MIN_POLYGON_AREA,
     ROOM_ID_MAX_LENGTH,
     ROOM_ID_MAX_WORDS,
     ROOM_ID_MIN_DIGITS,
+    ROOM_KEY_SEPARATOR,
 )
 
 
@@ -91,6 +93,26 @@ def filter_dataframe_by_building(df, building_col: str, building_id: str):
         == building_id.upper()
     )
     return df.loc[mask].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Floor code helpers
+# ---------------------------------------------------------------------------
+
+_FLOOR_COL_CANDIDATES: set[str] = {
+    "floor", "floor code", "floor id", "floor no", "floor number", "floor level",
+    "floorcode", "floorid", "floorno", "floornumber",
+    "flr", "flr code", "flr id", "flrcode", "flrid",
+    "level", "level code", "level id",
+}
+
+
+def detect_floor_column(columns: list[str]) -> str | None:
+    """Return the original column name that represents a floor code."""
+    for col in columns:
+        if normalize_col(col) in _FLOOR_COL_CANDIDATES:
+            return col
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -228,49 +250,23 @@ def is_valid_room_polygon(
 
 
 # ---------------------------------------------------------------------------
-# Text formatting helpers
+# Room layer key
 # ---------------------------------------------------------------------------
 
-def format_mtext_content(fields: dict[str, str]) -> str:
-    r"""Format {label: value} into an MTEXT string (lines joined by ``\P``)."""
-    lines = []
-    for label, value in fields.items():
-        display_label = label.strip().title()
-        lines.append(f"{display_label}: {value}")
-    return r"\P".join(lines)
+_LAYER_NAME_TRANSLATION = str.maketrans({c: "_" for c in LAYER_NAME_FORBIDDEN_CHARS})
 
 
-def build_attribute_map(
-    selected_columns: list[str], row_data: dict[str, str],
-) -> list[tuple[str, str, str]]:
-    """Build a list of (tag, prompt, value) tuples for block attribute creation.
+def build_room_key(building, floor, room) -> str | None:
+    """Build the room layer name ``<building>-<floor>-<room>``.
 
-    Parameters
-    ----------
-    selected_columns : list[str]
-        Original column names chosen by the user.
-    row_data : dict[str, str]
-        Column-name → cell-value mapping from the matched spreadsheet row.
+    Values are used as-is (only surrounding whitespace is trimmed); characters
+    AutoCAD forbids in layer names are replaced with ``_``. Returns None when
+    any part is empty, because the key would then be ambiguous.
 
-    Returns
-    -------
-    list of (tag, prompt, value)
-        - **tag** : ArcGIS-safe uppercase column name ≤ 30 chars
-        - **prompt** : original column name (shown in AutoCAD attribute dialog)
-        - **value** : string value from *row_data*
+    Examples: ``("0132", "01", "101")`` → ``0132-01-101``;
+    ``("0132", "1", "LAB/2")`` → ``0132-1-LAB_2``
     """
-    from metadata_utils import tag_from_column
-
-    result: list[tuple[str, str, str]] = []
-    for col in selected_columns:
-        tag = tag_from_column(col)
-        prompt = col.strip()
-        value = str(row_data.get(col, ""))
-        result.append((tag, prompt, value))
-    return result
-
-
-def build_output_path(original_path: str) -> str:
-    """``/path/to/plan.dwg`` → ``/path/to/plan_updated.dwg``"""
-    base, ext = os.path.splitext(original_path)
-    return f"{base}_updated{ext}"
+    parts = ["" if v is None else str(v).strip() for v in (building, floor, room)]
+    if not all(parts):
+        return None
+    return ROOM_KEY_SEPARATOR.join(parts).translate(_LAYER_NAME_TRANSLATION)

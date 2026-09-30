@@ -17,13 +17,18 @@ CSV_HEADER_ROW: int = 0            # 0-indexed; 0 → 1st row
 BUILDING_ID_LENGTH: int = 4
 
 # ---------------------------------------------------------------------------
-# AutoCAD annotation output
+# Room layer output (ArcGIS)
 # ---------------------------------------------------------------------------
-OUTPUT_LAYER: str = "ROOM_INFO_AI"
-ANNOTATION_COLOR: int = 3          # AutoCAD colour index (3 = green)
+# Each matched room's boundary is copied onto a layer named
+#   <Building><SEP><Floor><SEP><Room>      e.g. 0132-01-101
+# with the three values taken as-is from the matched spreadsheet row.
+ROOM_KEY_SEPARATOR: str = "-"
+ROOM_LAYER_COLOR: int = 3          # AutoCAD colour index (3 = green)
+# Characters AutoCAD does not allow in layer names; each is replaced with "_"
+LAYER_NAME_FORBIDDEN_CHARS: str = '<>/\\":;?*|=`'
+# Outline layers written by the old block-based versions; never room boundaries
+LEGACY_OUTLINE_LAYERS: tuple[str, ...] = ("ROOM_BLOCK_OUTLINE",)
 DEFAULT_TEXT_HEIGHT: float = 10.0
-MTEXT_WIDTH_FACTOR: float = 25.0   # MTEXT width = text_height × this
-VERTICAL_SPACING_MULTIPLIER: float = 1.6
 
 # ---------------------------------------------------------------------------
 # Room identifier heuristics
@@ -43,17 +48,6 @@ MAX_NEAREST_DISTANCE: float = 500.0      # max centroid distance for fallback
 # Metadata / XData
 # ---------------------------------------------------------------------------
 XDATA_APP_NAME: str = "ROOM_INFO_AI"
-
-# ---------------------------------------------------------------------------
-# Attributed block inserts (ArcGIS-compatible)
-# ---------------------------------------------------------------------------
-BLOCK_NAME_PREFIX: str = "ROOM_BLOCK"         # prefix for block definition names
-BLOCK_LAYER: str = "ROOM_DATA"                # layer for block inserts
-BLOCK_OUTLINE_LAYER: str = "ROOM_BLOCK_OUTLINE"  # layer for outline rectangle
-ATTR_TEXT_HEIGHT_FACTOR: float = 1.0          # attr height = room text height × this
-ATTR_LINE_SPACING: float = 1.6               # vertical spacing between attributes
-BLOCK_PADDING: float = 0.5                   # padding inside outline rectangle
-ARCGIS_SAFE_LAYER: str = "ROOM_DATA"         # ArcGIS-safe layer name
 
 # ---------------------------------------------------------------------------
 # DWG ↔ DXF conversion

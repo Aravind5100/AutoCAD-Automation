@@ -13,7 +13,15 @@ import unittest
 
 import ezdxf
 
-from tests.helpers import ROOMS_CSV, TempDirTestCase, make_plan, run_pipeline
+from metadata_utils import read_xdata
+from tests.helpers import (
+    EXPECTED_LAYERS,
+    ROOMS_CSV,
+    TempDirTestCase,
+    make_plan,
+    room_layer_polygons,
+    run_pipeline,
+)
 
 RUN = os.environ.get("RUN_ACAD_TESTS") == "1"
 
@@ -92,13 +100,17 @@ class TestAutoCADRoundTrip(TempDirTestCase):
             self.assertEqual(f.read(6), b"AC1032")                     # B1
         self.assertEqual(sorted(os.listdir(os.path.dirname(self.dwg))), before)  # B4
 
-        msp = self._read_dwg(out).modelspace()
+        check = self._read_dwg(out)
+        msp = check.modelspace()
         handles = {e.dxf.handle for e in msp}
-        inserts = msp.query("INSERT")
-        self.assertEqual(len(inserts), 3)
-        for ins in inserts:
-            xd = ins.get_xdata("ROOM_INFO_AI")
-            self.assertIn(xd[1].value, handles)                         # polygon link holds
+        layers = room_layer_polygons(check)
+        self.assertEqual(set(layers), set(EXPECTED_LAYERS))             # room layers survive
+        for name, room in EXPECTED_LAYERS.items():
+            self.assertIn(name, check.layers)
+            meta = read_xdata(layers[name][0])
+            self.assertEqual(meta.room_id, room)
+            self.assertIn(meta.polygon_handle, handles)                 # polygon link holds
+        self.assertEqual(len(msp.query("INSERT")), 0)
         self.assertEqual(len(msp.query("HATCH")), 1)                    # B3
 
     def test_open_drawing_with_unsaved_changes_untouched_B9(self):

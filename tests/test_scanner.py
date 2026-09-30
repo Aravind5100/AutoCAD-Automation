@@ -49,32 +49,26 @@ class TestLabelsAndPolygons(TempDirTestCase):
             scan_drawing(self.path("nope.dxf"))
 
 
-class TestExistingAnnotations(TempDirTestCase):
-    """Duplicate prevention input (B2 regression tests)."""
+class TestExistingRoomLayers(TempDirTestCase):
+    """Duplicate prevention input: room-layer copies from a previous run."""
 
-    def test_all_annotation_styles_detected(self):
+    def test_copies_recorded_and_not_treated_as_rooms(self):
         doc = ezdxf.new("R2018")
         msp = doc.modelspace()
         register_xdata_app(doc)
-        # current style: block on ROOM_DATA with XData
-        doc.blocks.new("ROOM_BLOCK_101")
-        ins = msp.add_blockref("ROOM_BLOCK_101", (0, 0), dxfattribs={"layer": "ROOM_DATA"})
-        write_xdata(ins, AnnotationMetadata(room_id="101", polygon_handle="AB"))
-        # v1 style: MTEXT on ROOM_INFO_AI with XData
-        mt = msp.add_mtext("Dept: Eng", dxfattribs={"layer": "ROOM_INFO_AI"})
-        write_xdata(mt, AnnotationMetadata(room_id="102"))
-        # XData stripped by another tool: ROOM_IDENTIFIER attribute fallback
-        blk = doc.blocks.new("X")
-        blk.add_attdef("ROOM_IDENTIFIER", (0, 0))
-        ins2 = msp.add_blockref("X", (0, 0), dxfattribs={"layer": "ROOM_DATA"})
-        ins2.add_attrib("ROOM_IDENTIFIER", " 103 ", (0, 0))
-        # a block on another layer is not ours
-        other = msp.add_blockref("ROOM_BLOCK_101", (0, 0), dxfattribs={"layer": "0"})
-        write_xdata(other, AnnotationMetadata(room_id="999"))
+        square = [(0, 0), (100, 0), (100, 100), (0, 100)]
+        msp.add_lwpolyline(square, close=True)                       # the real room
+        copy = msp.add_lwpolyline(square, close=True, dxfattribs={"layer": "0132-01-101"})
+        write_xdata(copy, AnnotationMetadata(room_id="101", polygon_handle="AB"))
+        # old block-based output is no longer treated as an existing annotation
+        doc.blocks.new("ROOM_BLOCK_102")
+        ins = msp.add_blockref("ROOM_BLOCK_102", (0, 0), dxfattribs={"layer": "ROOM_DATA"})
+        write_xdata(ins, AnnotationMetadata(room_id="102"))
         doc.saveas(self.path("a.dxf"))
 
         scan = scan_drawing(self.path("a.dxf"))
-        self.assertEqual(scan.existing_annotation_room_ids, {"101", "102", "103"})
+        self.assertEqual(scan.existing_annotation_room_ids, {"101"})
+        self.assertEqual(len(scan.polygons), 1)
 
 
 if __name__ == "__main__":
