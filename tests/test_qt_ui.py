@@ -36,8 +36,16 @@ class QtTestCase(TempDirTestCase):
         self.boxes = {p.attribute: p.start() for p in patches}
         for p in patches:
             self.addCleanup(p.stop)
-        self.win = qt_ui.MainWindow(QSettings(self.path("settings.ini"), QSettings.IniFormat))
-        self.addCleanup(self.win.deleteLater)
+        self.settings = QSettings(self.path("settings.ini"), QSettings.IniFormat)
+        self.win = qt_ui.MainWindow(self.settings)
+
+    def tearDown(self):
+        # Flush QSettings and destroy the window *before* the temp folder is removed;
+        # otherwise Qt writes settings.ini afterwards and recreates the folder.
+        self.settings.sync()
+        self.win.deleteLater()
+        QApplication.processEvents()
+        super().tearDown()
 
     def ready_window(self):
         self.win.load_sheet(self.write_text("rooms.csv", ROOMS_CSV), wait=True)
