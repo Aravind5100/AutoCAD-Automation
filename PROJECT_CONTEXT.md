@@ -21,7 +21,7 @@ A Windows desktop tool (Python + Tkinter) that takes:
 finds the room-number labels and room-boundary polygons in the drawing, matches each room to its
 spreadsheet row, and writes the chosen spreadsheet columns into the drawing as **ArcGIS-readable
 attributed blocks** (INSERT + ATTRIB), plus a room-outline copy and XData metadata.
-Output: `<name>_annotated.dwg` (or `_annotated.dxf`) next to the input. The input file is never overwritten.
+Output: a new DWG (or DXF) at a location the user picks in a Save As dialog (suggested name `<name>_annotated.<ext>`, starting in Documents). The input file is never overwritten and cannot be chosen as the target.
 
 AutoCAD itself is only used (over COM) to convert DWG ↔ DXF. All drawing reading and writing is
 done in pure Python with **ezdxf**.
@@ -80,7 +80,7 @@ User picks: spreadsheet, drawing, room-ID column, building column, columns to in
         │
 Phase 0 │ dwg_converter.dwg_to_dxf()            [only if input is .dwg]
         │   AutoCAD COM: Dispatch → _prepare_acad (FILEDIA/CMDDIA/PROXYNOTICE=0)
-        │   → open DWG read-only (or reuse if already open) → SaveAs(<name>.dxf, acR12_dxf=1)
+        │   → open DWG read-only (or reuse if already open) → SaveAs(<name>.dxf, ac2018_dxf=65)
 Phase 1 │ utils.extract_building_id()  first 4 chars of filename, uppercased
         │ utils.filter_dataframe_by_building()  stop if 0 rows
 Phase 2 │ autocad_scanner.scan_drawing()  ezdxf.readfile, one pass over modelspace:
@@ -97,8 +97,8 @@ Phase 5 │ annotation_writer.write_annotations()   re-reads the DXF with ezdxf,
         │   per matched room: block def ROOM_BLOCK_<ID> (ATTDEF per column) → INSERT on ROOM_DATA
         │   placed at label X, label Y − h×1.6 → ATTRIBs → outline copy on ROOM_BLOCK_OUTLINE
         │   → XData ROOM_INFO_AI
-Phase 5b│ .dwg input: dwg_converter.dxf_doc_to_dwg()  save temp DXF → AutoCAD open → SaveAs(out, 1) ← BUG B1
-        │ .dxf input: doc.saveas(<name>_annotated.dxf)
+Phase 5b│ .dwg input: dwg_converter.dxf_doc_to_dwg()  save temp DXF → AutoCAD open → SaveAs(out, ac2018_dwg=64)
+        │ .dxf input: doc.saveas(out)      (out = path chosen in AppUI._ask_output_path before the run starts)
 Phase 6 │ summary to log + messagebox
 ```
 
@@ -130,8 +130,8 @@ Phase 6 │ summary to log + messagebox
 | Outline | copy of the associated room polygon (POLYLINE in R12); fallback rectangle ~25 × text height wide if no polygon |
 | XData app | `ROOM_INFO_AI`, six 1000-strings in order: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type("room_info")` |
 
-Handles in XData are handles **in the intermediate R12 DXF**; AutoCAD may re-assign handles on DXF → DWG, so the
-polygon link is not guaranteed stable in the final DWG [inferred — not tested].
+Handles in XData are handles in the intermediate DXF. [verified 2026-09-29 with AutoCAD 2023] they stay valid in the
+final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed at the room polygon.
 
 ---
 
@@ -142,8 +142,9 @@ polygon link is not guaranteed stable in the final DWG [inferred — not tested]
 | ~Mar 16–17 | **v0** (pre-git) | Pure COM prototype: `autocad_handler.py` (SelectionSet text scan, `AddMText`, save `_updated.dwg`), `matcher.py`, `file_loader.py`. Plain text-under-label annotation, no polygon awareness. |
 | Mar 27 | **v1** — `c53698c` initial commit | Modular rewrite: scanner / polygon_matcher / annotation_writer / metadata_utils / config. Added **polygon association**, **XData linkage**, **building filter**, **dedup**, dark GUI, 929-line `DOCUMENTATION.md`. Still 100% COM, output = **MTEXT** on `ROOM_INFO_AI`. Branches `master` and `dev_mtext` (remote default branch) still point here. |
 | Mar 27 (code) / Mar 30 (commit) | **v2** — `b6578c2` "ezdxf migration + standalone exe build" | Switched scanning and writing to **ezdxf** on a DXF made by AutoCAD; output switched from MTEXT to **ArcGIS attributed blocks**; outlines follow the real room polygon; MTEXT formatting stripper added; PyInstaller spec added. `.gitignore` gained `debug_saveas.py, debug_polys.py, debug_scan.py, debug_scan2.py, test_full_pipeline.py` — traces of the debugging done here. |
-| Mar 31 | **v3** — `d00322d` (local only, **not pushed**; `origin/dev_exe` is at `b6578c2`) | Fixed COM hangs by suppressing AutoCAD dialogs (`_prepare_acad`); **dropped the exe** in favour of ZIP + `setup.bat`/`run.bat`; README rewritten as an end-user guide; removed stale docs. `AutoCAD_Room_Annotator_v1.0.zip` built 13:50 (gitignored). |
-| Working tree (uncommitted) | — | Legacy v0 files deleted (safe — nothing imports them); `build_exe.spec` back as untracked; `.gitignore` trimmed and now ignores the ZIP. |
+| Mar 31 | **v3** — `d00322d` (pushed 2026-09-29) | Fixed COM hangs by suppressing AutoCAD dialogs (`_prepare_acad`); **dropped the exe** in favour of ZIP + `setup.bat`/`run.bat`; README rewritten as an end-user guide; removed stale docs. `AutoCAD_Room_Annotator_v1.0.zip` built 13:50 (gitignored). |
+| Sep 29 | `7f31ea3`, `41957a8` | Legacy v0 files removed, `build_exe.spec` restored, `.gitignore` trimmed; PROJECT_CONTEXT.md, CLAUDE.md and the learning report added. |
+| Sep 29 | group-1 fix | 2018 DXF/DWG conversion (B1, B3), MTEXT via `plain_text()` + `char_height` fix (B8), 2D-only POLYLINE filter, user-chosen output location (D13). |
 
 Branch note: there is **no `main` branch** — local branches are `master`, `dev_mtext`, `dev_exe`; remote default is `dev_mtext`.
 
@@ -159,7 +160,8 @@ Branch note: there is **no `main` branch** — local branches are `master`, `dev
 | D4 | Metadata in **XData** (`ROOM_INFO_AI`) with polygon + text handles | Standard AutoCAD mechanism; survives save; queryable later | history |
 | D5 | **Migrate from COM entity access to ezdxf** (keep COM only for conversion) | [inferred] COM is one cross-process call per property (slow on large drawings), fragile (busy/rejected calls, modal dialogs), and returns raw MTEXT formatting codes (the stripper's comment says "returned by AutoCAD COM TextString"). ezdxf is fast, testable offline, deterministic | commit msg says *what*, not *why* |
 | D6 | Output **attributed blocks** instead of MTEXT | ArcGIS turns block attributes into attribute-table fields; MTEXT is just text | history (README ArcGIS section) |
-| D7 | Convert through **R12 DXF** (`ACAD_DXF_FORMAT = 1`) | [inferred] simplest DXF: AutoCAD explodes MTEXT to TEXT, and polylines become classic POLYLINE — easy to scan. Not documented. Costs fidelity (B3) | config comment |
+| D7 | ~~Convert through **R12 DXF**~~ → **2018 DXF / native DWG** since 2026-09-29 (`ACAD_DXF_FORMAT = 65`, `ACAD_DWG_FORMAT = 64`) | R12 was [inferred] chosen for easy scanning but degraded the whole drawing (B3). MTEXT is now read with ezdxf `MText.plain_text()` | code |
+| D13 | User chooses the **output location** (Save As dialog, starts in Documents, remembers last folder, refuses the input file) | Owner decision 2026-09-29: don't save next to the original by default | code |
 | D8 | Distribute as **ZIP + setup.bat/run.bat**, not a PyInstaller exe | [inferred] exe build of pywin32/pandas is large and brittle and trips antivirus; ZIP + venv is transparent. d00322d: "replaced by ZIP distribution". Branch `dev_exe` + re-added spec suggests this is still open | history |
 | D9 | Suppress AutoCAD dialogs (FILEDIA/CMDDIA/PROXYNOTICE = 0) | Modal dialogs block COM calls forever ("hangs at Converting DWG → DXF") | history (d00322d, README troubleshooting) |
 | D10 | Single-pass scan into plain dataclasses; no live entity references after scan | Performance and separation (matcher/writer never touch the CAD layer) | history |
@@ -174,7 +176,7 @@ Branch note: there is **no `main` branch** — local branches are `master`, `dev
 |---|---|
 | COM scanning slow / fragile on large drawings | Single-pass scan + caching (v1); then replaced COM scanning with ezdxf (v2) |
 | ModelSpace not ready right after open | Retry 3× with 1 s delay (v1 COM scanner; gone after v2) |
-| MTEXT labels came back with formatting codes (`{\fArial|b0;101}`) so room IDs failed the heuristic | `strip_mtext_formatting` regex (v2) |
+| MTEXT labels came back with formatting codes (`{\fArial|b0;101}`) so room IDs failed the heuristic | `strip_mtext_formatting` regex (v2); replaced by ezdxf `plain_text()` on 2026-09-29 |
 | Labels nearer a floor outline than a room / outlines nesting | Smallest-area containing polygon rule |
 | Plain MTEXT useless in ArcGIS | Attributed blocks with ArcGIS-safe names (v2) |
 | `LWPOLYLINE requires DXF R2000` when writing outlines into an R12 doc | `try: add_lwpolyline except: add_polyline2d(...).close()` fallback [verified: ezdxf raises `DXFVersionError` for LWPOLYLINE and MTEXT in R12] |
@@ -190,14 +192,14 @@ Severity: 🔴 wrong output / data loss · 🟠 incorrect behaviour · 🟡 robu
 
 | ID | Sev | Issue | Evidence | Suggested fix |
 |---|---|---|---|---|
-| **B1** | 🔴 | `dxf_doc_to_dwg` calls `doc.SaveAs(abs_output, 1)` with comment "1 = DWG format" (`dwg_converter.py:150`). In the AutoCAD 2023 type library **`1 = acR12_dxf`**; `acNative = ac2018_dwg = 64`. So the "DWG" output is requested in **R12 DXF format**. | [verified] enum read from `acax24enu.tlb`. Runtime file content not inspected (AutoCAD not launched). | `doc.SaveAs(abs_output)` (native) or `64`; then check the output file header begins `AC10xx`, not `0\nSECTION`. |
+| **B1** ✅ fixed 2026-09-29 | 🔴 | `dxf_doc_to_dwg` calls `doc.SaveAs(abs_output, 1)` with comment "1 = DWG format" (`dwg_converter.py:150`). In the AutoCAD 2023 type library **`1 = acR12_dxf`**; `acNative = ac2018_dwg = 64`. So the "DWG" output is requested in **R12 DXF format**. | [verified] enum read from `acax24enu.tlb`. Runtime verified 2026-09-29 with AutoCAD 2023: output header `AC1032` (real 2018 DWG); 2018 DXF keeps HATCH/MTEXT/LWPOLYLINE. | `doc.SaveAs(abs_output)` (native) or `64`; then check the output file header begins `AC10xx`, not `0\nSECTION`. |
 | **B2** | 🔴 | **Dedup never works.** Scanner does `for appid, tags in entity.xdata` (`autocad_scanner.py:259, 282`) → `TypeError: 'XData' object is not iterable`, swallowed by `except Exception: pass`. Even with the correct API, `get_xdata()` excludes the 1001 app tag, so `tags[1]` would be the **polygon handle**, not the room ID. Re-running on an annotated drawing adds duplicate blocks + outlines. | [verified] built an annotated R12 DXF, rescanned → `existing_annotation_room_ids == set()` | `xd = entity.get_xdata(XDATA_APP_NAME)` → `xd[0].value`; or reuse `metadata_utils.read_xdata`. Also: outline copies on `ROOM_BLOCK_OUTLINE` are rescanned as room polygons — skip that layer. |
-| **B3** | 🔴 | **Round-trip through R12 degrades the whole drawing** (no LWPOLYLINE, MTEXT exploded, no hatch associativity / dynamic blocks / modern objects; `$INSUNITS` not exported). Output is a lossy copy of the original plus annotations. | [verified] ezdxf R12 limits; ezdxf warns "Drawing units ($INSUNITS) are not exported for DXF R12" | Convert via `ac2018_dxf` (65) and ezdxf ≥ R2000; LWPOLYLINE/MTEXT paths already exist. Re-test the MTEXT stripper (B8) then. |
+| **B3** ✅ fixed 2026-09-29 | 🔴 | **Round-trip through R12 degrades the whole drawing** (no LWPOLYLINE, MTEXT exploded, no hatch associativity / dynamic blocks / modern objects; `$INSUNITS` not exported). Output is a lossy copy of the original plus annotations. | [verified] ezdxf R12 limits; ezdxf warns "Drawing units ($INSUNITS) are not exported for DXF R12" | Convert via `ac2018_dxf` (65) and ezdxf ≥ R2000; LWPOLYLINE/MTEXT paths already exist. Re-test the MTEXT stripper (B8) then. |
 | **B4** | 🟠 | Intermediate `<name>.dxf` from `dwg_to_dxf` is **never deleted** and **silently overwrites** any existing same-name DXF. README says "no intermediate DXF files are left behind". | [verified] code | Write to a temp dir; delete in `finally`. |
 | **B5** | 🟠 | **pandas 3.x** reads `dtype=str` as the new `str` dtype, so `if df[col].dtype == object` (`spreadsheet_loader.py:103`) is false → **cell values are never stripped**; `'  Eng '` is written to the drawing. Blank rows aren't dropped either (empty strings aren't NaN). `setup.bat` installs latest pandas → fresh installs hit this. | [verified] pandas 3.0.1 in `.venv`, end-to-end test | Strip with `df[col].str.strip()` regardless of dtype; drop rows where all values `== ""`; or pin `pandas<3`. |
 | **B6** | 🟠 | `messagebox.*` called from the worker thread (`ui.py:481, 500, 587, 617, 630, 635`). Tkinter is not thread-safe → occasional hangs/crashes. | [verified] code | Wrap in `self.root.after(0, ...)`. |
 | **B7** | 🟠 | `_prepare_acad` sets FILEDIA/CMDDIA/PROXYNOTICE = 0 on the user's AutoCAD and **never restores** them. These are registry-persisted → the user's AutoCAD keeps file dialogs off afterwards. | [verified] code; sysvar persistence is AutoCAD behaviour | Read old values first, restore in `finally`. |
-| **B8** | 🟠 | MTEXT stripper: lowercase `\p` is in the toggle group, so paragraph codes like `\pxqc;101` become `xqc;101` → fail the room-ID check → room silently missed. `\P` becomes "" not " " (`Line1\PLine2` → `Line1Line2`, docstring says `Line1 Line2`). Only matters for DXF input today (R12 has no MTEXT) but matters after B3's fix. | [verified] ran function | Handle `\p...;` as a sized code; replace `\P` with space; or use `ezdxf`'s `MText.plain_text()`. |
+| **B8** ✅ fixed 2026-09-29 | 🟠 | MTEXT stripper: lowercase `\p` is in the toggle group, so paragraph codes like `\pxqc;101` become `xqc;101` → fail the room-ID check → room silently missed. `\P` becomes "" not " " (`Line1\PLine2` → `Line1Line2`, docstring says `Line1 Line2`). Only matters for DXF input today (R12 has no MTEXT) but matters after B3's fix. | [verified] ran function | Handle `\p...;` as a sized code; replace `\P` with space; or use `ezdxf`'s `MText.plain_text()`. |
 | **B9** | 🟠 | If the drawing is **already open** in AutoCAD (which the README tells users to do), `dwg_to_dxf` calls `SaveAs` on the user's open document, which re-points that document to the R12 `.dxf` [inferred AutoCAD SaveAs semantics]. | code | Open a separate read-only copy, or use `doc.Export`/`WBLOCK`-style copy. |
 | **B10** | 🟡 | Excel numeric building codes lose leading zeros: cell `132` (number) → `'132'` ≠ `'0132'` → rows filtered out. | [verified] openpyxl test | Zero-pad numeric building values to `BUILDING_ID_LENGTH`, or warn. |
 | **B11** | 🟡 | Room-ID heuristic false positives: `"1ST FLOOR"`, `"LEVEL 2"`, `"SCALE 1"`, `"STAIR 3"`, `"UP 18R"`, `"2024"` all pass; `"Room 101"` passes but will not match sheet `"101"`. False negatives: `"LOBBY"`, `"101 / 102"`. Harmless unless a false positive matches a sheet ID. | [verified] ran function | Optional label-layer filter; configurable regex. |
@@ -207,6 +209,8 @@ Severity: 🔴 wrong output / data loss · 🟠 incorrect behaviour · 🟡 robu
 | **B15** | 🟡 | Dead code/config left from the COM/MTEXT era: `format_mtext_content`, `build_output_path`, `dxf_to_dwg` (`_build_dxf_output_path` only serves the B13 branch), `read_xdata`/`has_app_xdata` (unused — but it's the *correct* reader for B2), `find_column`, `build_col_map`; constants `OUTPUT_LAYER` (still used only for legacy MTEXT dedup), `MTEXT_WIDTH_FACTOR`, `VERTICAL_SPACING_MULTIPLIER`, `DXF_VERSION`, `ARCGIS_SAFE_LAYER`; unused imports (`time`, `Vec3`, `build_output_path`). | [verified] grep | Remove after fixing B2. |
 | **B16** | 🟡 | README drift: still lists the deleted legacy files; claims no intermediate DXF (B4); ArcGIS example table shows `ROOM_ID`/`BUILDING` fields that only exist if the user ticks those columns (building ID lives in XData, not attributes). | [verified] | Update README. |
 | **B17** | 🟡 | No automated tests; no sample data in repo. | [verified] | See §10.3 for an offline test recipe. |
+| **B18** | 🟠 | When AutoCAD is busy, COM calls fail with `RPC_E_CALL_REJECTED` ("Call was rejected by callee"). `dwg_converter` wraps `doc.Close` / `SetVariable` in `except: pass`, so a rejected `Close` silently **leaves the converted drawing open** in AutoCAD. | [verified 2026-09-29] AutoCAD 2023 test left `<name>.dxf` open | Retry on `RPC_E_CALL_REJECTED` (small retry helper or a COM message filter) and log failures. |
+| **B19** | 🟡 | `_prepare_acad` needs an open drawing (`ActiveDocument`) to set FILEDIA/CMDDIA/PROXYNOTICE. When AutoCAD sits on the Start tab with no drawing open, suppression is **silently skipped** for the DWG → DXF step. | [verified 2026-09-29] `Documents.Count == 0` → "Failed to get the Document object" | Set sysvars after opening the drawing, and restore them afterwards (see B7). |
 
 ---
 
@@ -266,7 +270,7 @@ Expected today: 101 → "contains" (area 10000, not the floor outline); INSERT `
 - AutoCAD `AcSaveAsType`: 1 = R12 DXF, 12/13 = 2000 DWG/DXF, 24/25 = 2004, 36/37 = 2007, 48/49 = 2010, 60/61 = 2013, 64/65 = 2018; `acNative` = 64.
 - COM from a thread needs `pythoncom.CoInitialize()` / `CoUninitialize()` (already done in `_run_annotation`).
 - `win32com.client.Dispatch` will *launch* AutoCAD if it is not running (slow); the README asks users to start it first.
-- Git: `d00322d` is unpushed; working tree has uncommitted legacy deletions and an untracked `build_exe.spec`. Ask before committing/pushing. There is no `main` branch.
+- Git: work happens on `dev_exe` (tracks `origin/dev_exe`). There is no `main` branch; remote default is `dev_mtext` (still at the initial commit). Ask before committing/pushing.
 
 ### 10.5 Open questions for the owner
 1. Exe (PyInstaller, `dev_exe` branch, re-added spec) or ZIP distribution — which is final?

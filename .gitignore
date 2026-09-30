@@ -54,3 +54,6 @@ sample_data.csv
 
 # Distribution packages
 AutoCAD_Room_Annotator_*.zip
+
+# Office lock files
+~$*

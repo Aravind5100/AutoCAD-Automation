@@ -19,7 +19,7 @@ from typing import Callable
 import pythoncom
 import win32com.client
 
-from config import ACAD_DXF_FORMAT
+from config import ACAD_DWG_FORMAT, ACAD_DXF_FORMAT
 
 
 class ConversionError(Exception):
@@ -147,7 +147,7 @@ def dxf_doc_to_dwg(
         opened_by_us = True
 
         _log(log_fn, f"  Saving as DWG: {os.path.basename(abs_output)}")
-        doc.SaveAs(abs_output, 1)  # 1 = DWG format
+        doc.SaveAs(abs_output, ACAD_DWG_FORMAT)
         _log(log_fn, "  DXF -> DWG conversion complete.")
 
         return abs_output

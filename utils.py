@@ -94,55 +94,6 @@ def filter_dataframe_by_building(df, building_col: str, building_id: str):
 
 
 # ---------------------------------------------------------------------------
-# MTEXT formatting stripper
-# ---------------------------------------------------------------------------
-
-# Common MTEXT formatting codes returned by AutoCAD COM TextString:
-#   {\fArial|b0|i0|c0|p34;...}   font/style blocks
-#   \A0; \A1; \A2;               alignment
-#   \P                            paragraph break
-#   \L \l                         underline on/off
-#   \O \o                         overline on/off
-#   \K \k                         strikethrough on/off
-#   \H1.5x;                       height
-#   \W0.8;                        width factor
-#   \C1;                          colour
-#   \T1.0;                        tracking
-#   \Q20;                         oblique angle
-#   \S...^...;                    stacking
-#   {} braces                     grouping
-
-_MTEXT_FORMAT_RE = re.compile(
-    r"\\[Aa][0-9]*;"          # alignment  \A1;
-    r"|\\[LlOoKkPp]"          # toggles    \L \l \O \o \K \k \P
-    r"|\\[HhWwCcTtQq][^;]*;"  # sized codes \H1.5x; \W0.8; \C1; etc.
-    r"|\\[Ff][^;]*;"           # font       \fArial|b0|i0;
-    r"|\\[Ss][^;]*;"           # stacking   \S...;
-    r"|\\~"                    # non-breaking space
-    r"|\{|\}",                 # braces
-)
-
-
-def strip_mtext_formatting(text: str) -> str:
-    """Remove AutoCAD MTEXT formatting codes, returning plain text.
-
-    Examples:
-        ``{\\fArial|b0|i0;1000}`` → ``1000``
-        ``\\A1;Room 101``         → ``Room 101``
-        ``Line1\\PLine2``         → ``Line1 Line2``
-    """
-    if not text:
-        return ""
-    # Remove \f font specs inside braces:  {\fArial|b0|i0|c0|p34;TEXT}
-    cleaned = re.sub(r"\{\\f[^;]*;([^}]*)\}", r"\1", text)
-    # Remove remaining formatting codes
-    cleaned = _MTEXT_FORMAT_RE.sub("", cleaned)
-    # Collapse whitespace
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
-
-
-# ---------------------------------------------------------------------------
 # Room identifier detection heuristics
 # ---------------------------------------------------------------------------
 

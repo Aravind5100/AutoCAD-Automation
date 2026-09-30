@@ -9,12 +9,14 @@ Manages the full workflow:
   Step 4 - Display summary results
 """
 
+import os
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import pythoncom
 
+from config import OUTPUT_SUFFIX
 from spreadsheet_loader import (
     FileLoadError,
     find_room_id_column_suggestion,
@@ -66,6 +68,7 @@ class AppUI:
         self._columns: list[str] = []
         self._field_vars: dict[str, tk.BooleanVar] = {}
         self._running = False
+        self._last_output_dir: str | None = None
 
         self._build_ui()
 
@@ -440,6 +443,11 @@ class AppUI:
             )
             return
 
+        output_path = self._ask_output_path(self._dwg_path.get())
+        if not output_path:
+            self._log("Run cancelled -- no output location chosen.", tag="WARN")
+            return
+
         self._set_running(True)
         thread = threading.Thread(
             target=self._run_annotation,
@@ -449,12 +457,54 @@ class AppUI:
                 room_id_col,
                 building_col,
                 selected_cols,
+                output_path,
             ),
             daemon=True,
         )
         thread.start()
 
-    def _run_annotation(self, dwg_path, df, room_id_col, building_col, selected_cols):
+    def _ask_output_path(self, input_path: str) -> str | None:
+        """Ask where to save the annotated drawing. Returns None if cancelled.
+
+        The dialog never starts in the input drawing's folder, and the
+        original drawing itself is refused as a target.
+        """
+        base, ext = os.path.splitext(os.path.basename(input_path))
+        ext = ext.lower()
+        kind = "DWG" if ext == ".dwg" else "DXF"
+
+        initial_dir = self._last_output_dir
+        if not initial_dir or not os.path.isdir(initial_dir):
+            documents = os.path.join(os.path.expanduser("~"), "Documents")
+            initial_dir = documents if os.path.isdir(documents) else os.path.expanduser("~")
+
+        input_norm = os.path.normcase(os.path.abspath(input_path))
+        while True:
+            path = filedialog.asksaveasfilename(
+                title="Save Annotated Drawing As",
+                initialdir=initial_dir,
+                initialfile=f"{base}{OUTPUT_SUFFIX}{ext}",
+                defaultextension=ext,
+                filetypes=[(f"{kind} files", f"*{ext}")],
+                confirmoverwrite=True,
+            )
+            if not path:
+                return None
+            if os.path.splitext(path)[1].lower() != ext:
+                path += ext
+            if os.path.normcase(os.path.abspath(path)) == input_norm:
+                messagebox.showerror(
+                    "Choose Another Name",
+                    "The original drawing cannot be overwritten.\n"
+                    "Please choose a different file name or folder.",
+                )
+                initial_dir = os.path.dirname(path)
+                continue
+            self._last_output_dir = os.path.dirname(path)
+            return path
+
+    def _run_annotation(self, dwg_path, df, room_id_col, building_col,
+                        selected_cols, output_path):
         """Worker thread: full annotation pipeline."""
         from autocad_scanner import AutoCADError, scan_drawing
         from polygon_matcher import associate_texts_with_polygons, match_rooms
@@ -466,9 +516,9 @@ class AppUI:
             self._log("=" * 56, tag="HEADER")
             self._log("Starting AutoCAD Room Annotation", tag="HEADER")
             self._log("=" * 56, tag="HEADER")
+            self._log(f"Output will be saved to: {output_path}", tag="INFO")
 
             # --- Phase 0: DWG -> DXF conversion (if needed) ---
-            import os
             is_dwg = dwg_path.lower().endswith(".dwg")
             if is_dwg:
                 self._set_status("Converting DWG to DXF...")
@@ -577,8 +627,7 @@ class AppUI:
             # --- Phase 5b: Convert annotated DXF to DWG (no intermediate file) ---
             if is_dwg:
                 self._set_status("Converting to DWG...")
-                self._log("Converting annotated DXF -> DWG (no intermediate files)...", tag="INFO")
-                output_path = os.path.splitext(dwg_path)[0] + "_annotated.dwg"
+                self._log("Converting annotated DXF -> DWG...", tag="INFO")
                 try:
                     output_path = dxf_doc_to_dwg(annotated_dxf_doc, output_path, log_fn=self._log)
                 except ConversionError as exc:
@@ -588,12 +637,14 @@ class AppUI:
                     return
             else:
                 # If input was DXF, save the annotated DXF
-                output_path = os.path.splitext(dxf_path)[0] + "_annotated.dxf"
-                self._log(f"Saving annotated DXF: {os.path.basename(output_path)}", tag="INFO")
+                self._log(f"Saving annotated DXF: {output_path}", tag="INFO")
                 try:
                     annotated_dxf_doc.saveas(output_path)
                 except Exception as exc:
-                    self._log(f"Failed to save annotated DXF: {exc}", tag="WARN")
+                    self._log(f"Failed to save annotated DXF: {exc}", tag="ERROR")
+                    self._set_status("Error -- could not save output.")
+                    messagebox.showerror("Save Error", f"Could not save:\n{output_path}\n\n{exc}")
+                    return
 
             # --- Phase 6: Summary ---
             self._log("\n" + "=" * 56, tag="HEADER")

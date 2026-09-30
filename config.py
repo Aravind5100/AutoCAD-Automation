@@ -58,8 +58,15 @@ ARCGIS_SAFE_LAYER: str = "ROOM_DATA"         # ArcGIS-safe layer name
 # ---------------------------------------------------------------------------
 # DWG ↔ DXF conversion
 # ---------------------------------------------------------------------------
-DXF_VERSION: str = "R12"                 # DXF version for SaveAs
-ACAD_DXF_FORMAT: int = 1                 # AutoCAD SaveAs format code for R12 DXF
+# AutoCAD AcSaveAsType codes (from the AutoCAD type library):
+#   1 = R12 DXF (lossy — do not use), 64 = 2018 DWG (= acNative), 65 = 2018 DXF
+ACAD_DXF_FORMAT: int = 65                # DWG -> DXF: 2018 DXF keeps the full drawing
+ACAD_DWG_FORMAT: int = 64                # DXF -> DWG: native 2018 DWG
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+OUTPUT_SUFFIX: str = "_annotated"        # suggested output name: <input>_annotated.<ext>
 
 # ---------------------------------------------------------------------------
 # Scan performance

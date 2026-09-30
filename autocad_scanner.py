@@ -33,7 +33,6 @@ from utils import (
     polygon_area,
     polygon_bbox,
     polygon_centroid,
-    strip_mtext_formatting,
 )
 
 
@@ -159,8 +158,10 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
     """Extract properties from a TEXT/MTEXT entity and add to result."""
     try:
         if etype == "MTEXT":
-            raw_text = entity.text  # ezdxf returns raw MTEXT content
-            text_val = strip_mtext_formatting(raw_text).strip()
+            # plain_text() removes all inline formatting codes; \~ (non-breaking
+            # space) is left literal, and paragraph breaks become newlines
+            plain = entity.plain_text().replace("\\~", " ")
+            text_val = " ".join(plain.split())
         else:
             text_val = str(entity.dxf.text).strip()
     except Exception:
@@ -186,8 +187,11 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
     except Exception:
         pos = (0.0, 0.0, 0.0)
 
+    # TEXT stores its size as "height", MTEXT as "char_height"
+    height_attr = "char_height" if etype == "MTEXT" else "height"
     try:
-        height = float(entity.dxf.height) if entity.dxf.hasattr("height") else DEFAULT_TEXT_HEIGHT
+        height = (float(entity.dxf.get(height_attr))
+                  if entity.dxf.hasattr(height_attr) else DEFAULT_TEXT_HEIGHT)
     except Exception:
         height = DEFAULT_TEXT_HEIGHT
 
@@ -214,6 +218,9 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
     """Extract properties from a polyline entity and add to result if valid."""
     try:
         closed = entity.is_closed
+        # POLYLINE also covers 3D polylines and meshes; only 2D ones are rooms
+        if etype == "POLYLINE" and not entity.is_2d_polyline:
+            return
     except Exception:
         return
 

@@ -33,7 +33,7 @@ the original file.
 3. Open AutoCAD and load your DWG file
 4. Double-click  run.bat           (launches the application)
 5. Select your spreadsheet, DWG file, choose columns, click "Run Annotation"
-6. Output: <original_name>_annotated.dwg  in the same folder as the input
+6. Choose where to save the result (suggested name: <original_name>_annotated.dwg)
 ```
 
 That's it. See below for detailed instructions if anything goes wrong.
@@ -165,18 +165,22 @@ For example: Department, Occupied By, Square Footage, etc.
 
 ### 5. Click "Run Annotation"
 
-The tool will:
+You will be asked **where to save** the annotated drawing (suggested name:
+`<original_name>_annotated.dwg`, starting in your Documents folder).
+The original drawing cannot be chosen as the target.
+
+The tool will then:
 1. Convert DWG to DXF (temporarily, using AutoCAD)
 2. Scan the drawing for room texts and room boundary polygons
 3. Match room texts to polygons (point-in-polygon test)
 4. Match rooms to spreadsheet data
 5. Insert attributed block annotations
-6. Convert back to DWG and save as `<original_name>_annotated.dwg`
+6. Convert back to DWG and save it to the location you chose
 
 ### 6. Check the Output
 
-The annotated DWG is saved in the **same folder** as the original DWG file.
-The original file is **never modified**.
+The annotated DWG is saved where you chose in step 5; the full path is shown
+in the log and the completion message. The original file is **never modified**.
 
 ---
 
@@ -262,11 +266,13 @@ The spreadsheet is filtered to only rows matching this building ID before matchi
 
 | File | Description |
 |---|---|
-| `<name>_annotated.dwg` | The annotated drawing with all block inserts. Saved next to the original. |
+| `<name>_annotated.dwg` (name and folder are your choice) | The annotated drawing with all block inserts, saved as a native AutoCAD 2018 DWG. |
 
-The original DWG is **never modified**. Only the new `_annotated.dwg` file is created.
+The original DWG is **never modified**.
 
-No intermediate DXF files are left behind — they are created temporarily in memory and cleaned up automatically.
+> **Note:** the DWG -> DXF conversion currently leaves a `<name>.dxf` next to the
+> original drawing (and overwrites an existing file of that name). This is a known
+> issue and will be fixed; move or delete that file if you don't need it.
 
 ---
 
@@ -470,7 +476,7 @@ AutoCAD-Annotator/
 - Only **Model Space** is scanned (Paper Space is ignored).
 - The first occurrence of each room ID is used for annotation placement.
 - The **first 4 characters** of the DWG filename are used as the building identifier.
-- The original DWG file is **never modified** — output is always a new `_annotated.dwg` file.
+- The original DWG file is **never modified** — output is always a new file, saved where you choose.
 
 ---
 
