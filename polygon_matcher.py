@@ -43,6 +43,7 @@ class TextPolygonAssociation:
     match_method: str = ""              # "contains" | "nearest" | ""
     polygon_area: float = 0.0
     polygon_centroid: tuple[float, float] = (0.0, 0.0)
+    polygon_vertices: list[tuple[float, float]] = field(default_factory=list)
     confidence: float = 0.0            # 0.0–1.0
 
 
@@ -54,6 +55,7 @@ class RoomMatch:
     polygon_handle: str = ""
     match_method: str = ""
     polygon_area: float = 0.0
+    polygon_vertices: list[tuple[float, float]] = field(default_factory=list)
     sheet_room_id: str = ""
     row_data: dict[str, str] = field(default_factory=dict)
     matched: bool = False
@@ -127,6 +129,7 @@ def associate_texts_with_polygons(
             assoc.match_method = "contains"
             assoc.polygon_area = best.area
             assoc.polygon_centroid = best.centroid
+            assoc.polygon_vertices = best.vertices
             assoc.confidence = 1.0
             contained += 1
 
@@ -144,6 +147,7 @@ def associate_texts_with_polygons(
                 assoc.match_method = "nearest"
                 assoc.polygon_area = best_poly.area
                 assoc.polygon_centroid = best_poly.centroid
+                assoc.polygon_vertices = best_poly.vertices
                 assoc.confidence = max(0.0, 1.0 - best_dist / MAX_NEAREST_DISTANCE)
                 nearest += 1
             else:
@@ -222,6 +226,7 @@ def match_rooms(
             polygon_handle=assoc.polygon_handle,
             match_method=assoc.match_method,
             polygon_area=assoc.polygon_area,
+            polygon_vertices=assoc.polygon_vertices,
         )
 
         if norm in sheet_lookup:
