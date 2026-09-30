@@ -142,8 +142,10 @@ class TestWorkDir(unittest.TestCase):
         dc.remove_work_dir(None)            # no-op
 
     def test_missing_input_dwg(self):
+        work = dc.make_work_dir()
+        self.addCleanup(dc.remove_work_dir, work)
         with self.assertRaises(dc.ConversionError):
-            dc.dwg_to_dxf(r"C:\definitely\missing.dwg", dc.make_work_dir())
+            dc.dwg_to_dxf(r"C:\definitely\missing.dwg", work)
 
 
 if __name__ == "__main__":

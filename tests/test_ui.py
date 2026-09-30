@@ -88,7 +88,7 @@ class TestColumns(UITestCase):
     def test_columns_detected_and_key_previewed(self):
         sheet = self.write_text("rooms.csv", ROOMS_CSV)
         with mock.patch.object(self.app, "_log"):
-            self.app._load_spreadsheet_columns(sheet)
+            self.app._load_spreadsheet_columns(sheet, background=False)
         self.assertEqual((self.app._room_id_col.get(), self.app._building_col.get(),
                           self.app._floor_col.get()), ("Room Number", "Building ID", "Floor"))
         self.assertEqual(self.app._key_example.cget("text"), "First row -> 0132-01-101")

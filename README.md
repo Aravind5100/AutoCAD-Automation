@@ -142,6 +142,9 @@ Open AutoCAD first, then press any key in the terminal to continue.
 
 ### 1. Select Your Spreadsheet
 
+Large Excel files take a while the first time (a 36,000-row workbook ≈ 15–25 s); the
+window stays usable while it loads. After that, the same unchanged file loads instantly.
+
 Click **"Browse"** next to the spreadsheet field and select your file:
 - Supported formats: **CSV**, **XLS**, **XLSX**
 - The spreadsheet must contain a column with room numbers (e.g., `1000`, `1001`, `102A`)
@@ -178,7 +181,8 @@ The tool will then:
 2. Scan the drawing for room texts and room boundary polygons
 3. Match room texts to polygons (point-in-polygon test)
 4. Match rooms to spreadsheet data
-5. Copy each matched room's boundary polygon onto its `Building-Floor-Room` layer
+5. Copy each matched room's boundary polygon onto its `Building-Floor-Room` layer and
+   write the key as a text label under the room number
 6. Convert back to DWG and save it to the location you chose
 
 ### 6. Check the Output
@@ -227,6 +231,9 @@ For each room identifier found in the drawing:
 4. **Nearest fallback** — if no polygon contains the text, use nearest centroid (configurable)
 
 ### Room Identifier Detection
+
+For multi-line labels (e.g. the room number with the area underneath, or a room name
+above the number), the first line that looks like a room identifier is used.
 
 Text entities are flagged as room identifiers if:
 - Not empty, length ≤ 20 characters, ≤ 3 words
@@ -298,8 +305,9 @@ it imports a CAD drawing. Every matched room gets its own layer:
 
 - The three values are taken **as-is** from the matched spreadsheet row (so `01` stays
   `01`, and `1` stays `1`), which keeps the name identical to your facilities data.
-- The layer holds a **copy** of the room's boundary polygon. The original polygon and
-  the drawing's own layers are not changed.
+- The layer holds a **copy** of the room's boundary polygon and a **text label with the
+  key**, placed just under the room number so you can see which rooms were processed.
+  The original polygon, room label and the drawing's own layers are not changed.
 - Characters AutoCAD does not allow in layer names (`< > / \ " : ; ? * | = `` ` ``) are
   replaced with `_`.
 - No blocks or attribute values are written.
@@ -338,6 +346,7 @@ All tuneable values are in `config.py`. You can edit this file with any text edi
 | `EXCEL_HEADER_ROW` | `2` | 0-indexed header row for Excel (2 = 3rd row) |
 | `CSV_HEADER_ROW` | `0` | 0-indexed header row for CSV (0 = 1st row) |
 | `BUILDING_ID_LENGTH` | `4` | Number of characters from filename for building ID |
+| `SPREADSHEET_CACHE_DIR` | `%LOCALAPPDATA%\RoomAnnotator\spreadsheet_cache` | Parsed spreadsheets are cached here; an unchanged file loads instantly the next time |
 
 ### Room Layers
 
@@ -345,6 +354,7 @@ All tuneable values are in `config.py`. You can edit this file with any text edi
 |---|---|---|
 | `ROOM_KEY_SEPARATOR` | `-` | Separator between Building, Floor and Room in layer names |
 | `ROOM_LAYER_COLOR` | `3` | AutoCAD color index of the room layers (3 = green) |
+| `ROOM_TAG_GAP_FACTOR` | `0.5` | Gap between the room label and the key label, in label heights |
 
 ### Polygon Detection
 

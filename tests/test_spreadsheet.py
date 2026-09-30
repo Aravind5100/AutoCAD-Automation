@@ -4,10 +4,14 @@ test_spreadsheet.py
 Loading and cleaning CSV / Excel input (B5 regression tests).
 """
 
+import os
+import time
 import unittest
+from unittest import mock
 
 import openpyxl
 
+import spreadsheet_loader
 from spreadsheet_loader import (
     FileLoadError,
     find_room_id_column_suggestion,
@@ -62,6 +66,38 @@ class TestExcel(TempDirTestCase):
         """B10 (open): a building code typed as a number loses its leading zero."""
         p = self._workbook([["t"], ["t"], ["Bldg", "Room"], [132, "101"]])
         self.assertEqual(load_spreadsheet(p)["Bldg"].iloc[0], "0132")
+
+
+class TestCache(TempDirTestCase):
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(spreadsheet_loader, "SPREADSHEET_CACHE_DIR",
+                                    self.path("cache"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.sheet = self.write_text("s.csv", "Room,Dept\n101,Eng\n")
+
+    def test_second_load_comes_from_cache(self):
+        first = load_spreadsheet(self.sheet, use_cache=True)
+        self.assertEqual(len(os.listdir(self.path("cache"))), 1)
+        with mock.patch.object(spreadsheet_loader, "_load_csv") as parse:
+            second = load_spreadsheet(self.sheet, use_cache=True)
+        parse.assert_not_called()
+        self.assertTrue(first.equals(second))
+
+    def test_changed_file_is_reparsed_and_old_entry_replaced(self):
+        load_spreadsheet(self.sheet, use_cache=True)
+        time.sleep(0.05)
+        with open(self.sheet, "a", encoding="utf-8") as f:
+            f.write("102,Admin\n")
+        df = load_spreadsheet(self.sheet, use_cache=True)
+        self.assertEqual(list(df["Room"]), ["101", "102"])
+        self.assertEqual(len(os.listdir(self.path("cache"))), 1)
+
+    def test_cache_off_by_default(self):
+        load_spreadsheet(self.sheet)
+        self.assertFalse(os.path.exists(self.path("cache")))
 
 
 class TestColumnSuggestion(unittest.TestCase):

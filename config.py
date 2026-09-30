@@ -5,11 +5,19 @@ Centralised configuration constants for the AutoCAD Room Annotation tool.
 All tuneable values live here so they can be adjusted without touching logic.
 """
 
+import os
+
+
 # ---------------------------------------------------------------------------
 # Spreadsheet
 # ---------------------------------------------------------------------------
 EXCEL_HEADER_ROW: int = 2          # 0-indexed; 2 → 3rd row is the header
 CSV_HEADER_ROW: int = 0            # 0-indexed; 0 → 1st row
+# Parsed spreadsheets are cached here so re-loading an unchanged file is instant
+SPREADSHEET_CACHE_DIR: str = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+    "RoomAnnotator", "spreadsheet_cache",
+)
 
 # ---------------------------------------------------------------------------
 # Building identifier
@@ -24,6 +32,9 @@ BUILDING_ID_LENGTH: int = 4
 # with the three values taken as-is from the matched spreadsheet row.
 ROOM_KEY_SEPARATOR: str = "-"
 ROOM_LAYER_COLOR: int = 3          # AutoCAD colour index (3 = green)
+# A text label with the key is written on the room layer, just under the room
+# label: same height as the room label, this many label-heights of gap below it
+ROOM_TAG_GAP_FACTOR: float = 0.5
 # Characters AutoCAD does not allow in layer names; each is replaced with "_"
 LAYER_NAME_FORBIDDEN_CHARS: str = '<>/\\":;?*|=`'
 # Outline layers written by the old block-based versions; never room boundaries

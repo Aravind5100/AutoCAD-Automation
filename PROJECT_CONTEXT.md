@@ -87,7 +87,10 @@ Phase 0 │ dwg_converter.dwg_to_dxf(dwg, work_dir)   [only if input is .dwg]
 Phase 1 │ utils.extract_building_id()  first 4 chars of filename, uppercased
         │ utils.filter_dataframe_by_building()  stop if 0 rows
 Phase 2 │ autocad_scanner.scan_drawing()  ezdxf.readfile, one pass over modelspace:
-        │   TEXT/MTEXT → is_room_identifier() → RoomText
+        │   TEXT/MTEXT → is_room_identifier() → RoomText (+ label_bbox via ezdxf.bbox)
+        │     multi-line MTEXT: first line that looks like a room ID ("022\P170" → 022)
+        │     TEXT/MTEXT carrying our XData (key labels from a previous run) skipped
+        │   ScanResult.doc keeps the parsed drawing so the writer doesn't re-read it
         │   closed LWPOLYLINE/POLYLINE, area ≥ 1.0 → RoomPolygon (vertices, area, centroid, bbox)
         │   polygon carrying our XData = room-layer copy from a previous run → existing IDs (dedup), not a room
         │   polygons on LEGACY_OUTLINE_LAYERS (old block-era outlines) skipped
@@ -101,7 +104,9 @@ Phase 4 │ polygon_matcher.match_rooms(..., [building_col, floor_col, room_col]
 Phase 5 │ annotation_writer.write_room_layers()   re-reads the DXF with ezdxf, returns (Drawing, created)
         │   per matched room: key = utils.build_room_key(row[bldg], row[floor], row[room])
         │   → layer <key> (colour 3) → closed copy of the room polygon on it (LWPOLYLINE; POLYLINE if R12)
-        │   → XData ROOM_INFO_AI. Skips (logged): already has a layer, no polygon, empty key part.
+        │   → TEXT with the key on that layer: under / above the room label or centred in the room,
+        │     at 100% / 75% / 50% of the label height — first spot that fits inside the polygon
+        │   → XData ROOM_INFO_AI on copy and text. Skips (logged): already has a layer, no polygon, empty key part.
         │   Flags: rooms linked by "nearest", polygons shared by 2+ labels
 Phase 5b│ .dwg input: dwg_converter.dxf_doc_to_dwg(doc, out, work_dir)  temp DXF in work_dir → open → SaveAs(out, 64)
         │ work_dir (tempfile.mkdtemp) is removed in _run_annotation's finally
@@ -116,7 +121,7 @@ Phase 6 │ summary to log + messagebox
 | `main.py` | Entry point; DPI awareness; centre window | |
 | `ui.py` | `AppUI`: 4-step GUI (Room / Building / Floor drop-downs + live key preview), validation, Save As prompt, worker thread, pipeline orchestration | All Tk calls from the worker go through `root.after` (`_dialog`, `_log`, `_set_status`) |
 | `config.py` | Every tunable constant | Some constants are dead (see §8) |
-| `spreadsheet_loader.py` | `load_spreadsheet` (dtype=str, keep_default_na=False), `_clean_dataframe`, room-ID column guess | Excel header row = **3rd row** by default (enterprise reports have title rows) |
+| `spreadsheet_loader.py` | `load_spreadsheet` (dtype=str, keep_default_na=False), `_clean_dataframe`, room-ID column guess, optional pickle cache (`use_cache=True`, keyed by path+size+mtime+header rows, in `SPREADSHEET_CACHE_DIR`) | Excel header row = **3rd row** by default. The UI loads on a worker thread with the cache on; pandas/openpyxl/ezdxf are preloaded in the background at start-up |
 | `utils.py` | Column normalisation, building-ID + floor-column detection, room-ID heuristic, geometry, `build_room_key` | |
 | `dwg_converter.py` | AutoCAD COM conversion only: `dwg_to_dxf`, `dxf_doc_to_dwg`, `make_work_dir`/`remove_work_dir`, `_acad_session`, `_call` | |
 | `autocad_scanner.py` | ezdxf single-pass scan → `RoomText`, `RoomPolygon`, `ScanResult` dataclasses | `AutoCADError` name kept from COM era |
@@ -133,7 +138,8 @@ Phase 6 │ summary to log + messagebox
 |---|---|
 | Layer per room | `<Building>-<Floor>-<Room>` (`ROOM_KEY_SEPARATOR`), values **as-is** from the matched spreadsheet row, whitespace-trimmed; characters in `LAYER_NAME_FORBIDDEN_CHARS` replaced with `_`; colour 3 (green) |
 | Geometry | a closed **copy** of the associated room polygon on that layer (LWPOLYLINE; POLYLINE for R12 DXF). Originals untouched |
-| Not written | blocks, attributes, text, outlines/rectangles (a room with no polygon is skipped, not approximated) |
+| Key label | TEXT = key on the room layer, inside the room where it fits (see pipeline) |
+| Not written | blocks, attributes, outlines/rectangles (a room with no polygon is skipped, not approximated) |
 | XData app | `ROOM_INFO_AI` on the copy, six 1000-strings: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type("room_layer")` |
 | ArcGIS | polygon feature class → `Layer` field = key → join the facilities table on it |
 
@@ -155,6 +161,7 @@ final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed a
 | Sep 29 | groups 2+3 | Dedup fixed (B2) and outline copies ignored on re-scan; pandas-3-safe cleaning (B5); private work dir + copy-before-convert (B4, B9); sysvars saved/restored with anchor drawing (B7, B19); busy-call retry `_call` (B18); dialogs marshalled to Tk main thread (B6); writer returns a Drawing (B13). Verified offline, with fake COM, and against AutoCAD 2023. |
 | Sep 29 | group 4 | `tests/` unittest suite + `run_tests.bat` (B17): 56 offline tests + 2 opt-in real-AutoCAD tests, all passing. |
 | Sep 29 | D14 room layers | Blocks replaced by one `Building-Floor-Room` layer per room (polygon copy + XData); Floor column in GUI with live key preview; dedup via XData on copies; README rewritten for the ArcGIS layer workflow. 63 offline + 2 AutoCAD tests pass. |
+| Sep 29 | real-data fixes | First real run (0036, Room_Data.xlsx 36k rows): only 3/62 rooms matched because labels are two-line MTEXT (number over area) → use the room-ID line (now 62/62). Visible key TEXT added on each room layer, placed inside the room (58/62 fully inside; 3 narrow shafts/stair can't fit). Spreadsheet: 13–25 s parse → background load + cache (0.1–0.2 s when unchanged). Writer reuses the scanner's drawing. Typical run ≈ 12 s (AutoCAD ≈ 4 s per conversion; first open after idle ≈ 19 s). |
 
 Branch note: there is **no `main` branch** — local branches are `master`, `dev_mtext`, `dev_exe`; remote default is `dev_mtext`.
 
@@ -276,6 +283,7 @@ in `tearDown` that AutoCAD's sysvars and open drawings are unchanged.
 - ezdxf: `entity.xdata` is an `XData` object (not iterable); use `entity.get_xdata(app)` / `has_xdata(app)` (or `metadata_utils.read_xdata`). R12 docs reject LWPOLYLINE and MTEXT (`DXFVersionError`). `Insert.attribs` is a list — use `get_attrib(tag)`.
 - AutoCAD busy: calls fail with `RPC_E_CALL_REJECTED`, **or** — when pywin32 must look a member up by name — with `AttributeError: AutoCAD.Application.<member>`. Wrap every COM call in `dwg_converter._call`. AutoCAD is busiest right after a drawing is closed (returning to the Start tab).
 - System variables need an open drawing; with none open, `ActiveDocument` raises "Failed to get the Document object".
+- Performance facts (this machine): cold first import of pandas/openpyxl can take 10–14 s (disk/AV); Room_Data.xlsx (4.6 MB, 36k×30) parses in 13–25 s; AutoCAD Documents.Open ≈ 3–4 s warm, ≈ 19 s first time after idle; a COM call blocks indefinitely while AutoCAD shows a modal dialog or is mid-command (seen once: 520 s).
 - Shell quirk seen on this machine: running test scripts from Git Bash `$TMP` (`/tmp/...`) hung at start-up; run them by Windows path (e.g. the session scratchpad) instead.
 - AutoCAD `AcSaveAsType`: 1 = R12 DXF, 12/13 = 2000 DWG/DXF, 24/25 = 2004, 36/37 = 2007, 48/49 = 2010, 60/61 = 2013, 64/65 = 2018; `acNative` = 64.
 - COM from a thread needs `pythoncom.CoInitialize()` / `CoUninitialize()` (already done in `_run_annotation`).

@@ -8,8 +8,10 @@ Each matched room gets:
      the three values taken as-is from the matched spreadsheet row.
   b. A copy of the room's boundary polygon on that layer. The original
      polygon and its layer are left untouched.
-  c. XData on the copy linking it to the source polygon and room label
-     (also used to skip rooms that already have a layer on a re-run).
+  c. A text label with the key on that layer, next to the room label and
+     inside the room where it fits, so processed rooms are visible in AutoCAD.
+  d. XData on the copy and the label linking them to the source polygon and
+     room label (also used to skip rooms that already have a layer on a re-run).
 
 In ArcGIS each room polygon then carries its key in the Layer field, which
 can be joined to the facilities spreadsheet.
@@ -22,11 +24,13 @@ from typing import Callable
 
 import ezdxf
 
-from config import ROOM_LAYER_COLOR
+from config import DEFAULT_TEXT_HEIGHT, ROOM_LAYER_COLOR, ROOM_TAG_GAP_FACTOR
 from metadata_utils import AnnotationMetadata, register_xdata_app, write_xdata
-from utils import build_room_key, normalize_room_id
+from utils import build_room_key, normalize_room_id, point_in_polygon, polygon_centroid
 
 _LIST_LIMIT = 10    # max room IDs listed per warning in the log
+_TEXT_WIDTH_FACTOR = 0.7    # estimated character width, in text heights
+_TAG_SCALES = (1.0, 0.75, 0.5)    # key label sizes tried, relative to the room label
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +38,9 @@ _LIST_LIMIT = 10    # max room IDs listed per warning in the log
 # ---------------------------------------------------------------------------
 
 def write_room_layers(
-    dxf_path: str,
+    drawing,
     matches: list,
+    room_texts: list,
     building_col: str,
     floor_col: str,
     room_col: str,
@@ -47,11 +52,14 @@ def write_room_layers(
 
     Parameters
     ----------
-    dxf_path : str
-        Path to the DXF file (produced by dwg_converter).
+    drawing : ezdxf.document.Drawing or str
+        The drawing already read by the scanner (``ScanResult.doc``), or a
+        path to the DXF file.
     matches : list[RoomMatch]
         From polygon_matcher.match_rooms; ``row_data`` must contain
         *building_col*, *floor_col* and *room_col*.
+    room_texts : list[RoomText]
+        Scanned room labels (position, height and extent of each label).
     building_col, floor_col, room_col : str
         Spreadsheet columns that make up the layer name.
     building_id : str
@@ -65,15 +73,19 @@ def write_room_layers(
     (annotated_doc, created_count)
         The annotated in-memory drawing; the caller saves or converts it.
     """
-    abs_path = os.path.abspath(dxf_path)
-    _log(log_fn, f"Opening DXF for room layers: {os.path.basename(abs_path)}")
-    try:
-        doc = ezdxf.readfile(abs_path)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to read DXF file:\n{abs_path}\nError: {exc}") from exc
+    if isinstance(drawing, str):
+        abs_path = os.path.abspath(drawing)
+        _log(log_fn, f"Opening DXF for room layers: {os.path.basename(abs_path)}")
+        try:
+            doc = ezdxf.readfile(abs_path)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to read DXF file:\n{abs_path}\nError: {exc}") from exc
+    else:
+        doc = drawing
 
     msp = doc.modelspace()
     register_xdata_app(doc)
+    labels = {rt.handle: rt for rt in room_texts}
 
     created = 0
     already_done: list[str] = []
@@ -105,6 +117,8 @@ def write_room_layers(
         try:
             _ensure_layer(doc, layer_name, ROOM_LAYER_COLOR)
             copy = _add_polygon(doc, msp, match.polygon_vertices, layer_name)
+            tag = _add_key_label(msp, labels.get(match.text_handle), layer_name,
+                                 match.polygon_vertices)
             meta = AnnotationMetadata(
                 room_id=match.room_id,
                 polygon_handle=match.polygon_handle,
@@ -112,8 +126,9 @@ def write_room_layers(
                 text_handle=match.text_handle,
                 match_method=match.match_method,
             )
-            if not write_xdata(copy, meta):
-                _log(log_fn, f"  WARNING: Could not attach metadata (XData) for {match.room_id}")
+            for entity in (copy, tag):
+                if entity is not None and not write_xdata(entity, meta):
+                    _log(log_fn, f"  WARNING: Could not attach metadata (XData) for {match.room_id}")
         except Exception as exc:
             failed.append(f"{match.room_id} ({exc})")
             continue
@@ -123,7 +138,7 @@ def write_room_layers(
         if match.match_method == "nearest":
             nearest.append(match.room_id)
 
-    _log(log_fn, f"  Room layers created: {created}")
+    _log(log_fn, f"  Room layers created: {created} (outline copy + key label each)")
     _log_list(log_fn, already_done, "rooms skipped -- a room layer already exists", warn=False)
     _log_list(log_fn, no_polygon, "rooms skipped -- no room boundary polygon found")
     _log_list(log_fn, missing_key,
@@ -147,6 +162,54 @@ def _add_polygon(doc, msp, vertices: list[tuple[float, float]], layer: str):
     if doc.dxfversion > "AC1009":
         return msp.add_lwpolyline(vertices, close=True, dxfattribs=attribs)
     return msp.add_polyline2d(vertices, close=True, dxfattribs=attribs)
+
+
+def _add_key_label(msp, label, key: str, room: list[tuple[float, float]]):
+    """Write *key* as text near the room label, inside the room where possible.
+
+    Candidate spots, in order: under the whole room label, above it, centred
+    in the room — first at the room label's text height, then smaller (for
+    small rooms). The first spot where the whole text fits inside the room
+    polygon wins; otherwise the first full-size spot where the text at least
+    starts inside; otherwise under the label.
+    """
+    if label is None:
+        return None
+    full_height = label.text_height or DEFAULT_TEXT_HEIGHT
+    if label.label_bbox is not None:
+        left, bottom, _, top = label.label_bbox
+    else:
+        left, bottom = label.position[0], label.position[1]
+        top = bottom + full_height
+    cx, cy = polygon_centroid(room)
+
+    def candidates(height):
+        gap = full_height * ROOM_TAG_GAP_FACTOR
+        width = height * _TEXT_WIDTH_FACTOR * len(key)    # estimated text width
+        return width, [
+            (left, bottom - gap - height),                # under the label
+            (left, top + gap),                            # above the label
+            (cx - width / 2, cy - height / 2),            # centred in the room
+        ]
+
+    def fits(x, y, width, height):
+        return all(point_in_polygon(px, py, room)
+                   for px, py in ((x, y), (x + width, y), (x, y + height), (x + width, y + height)))
+
+    for scale in _TAG_SCALES:
+        height = full_height * scale
+        width, spots = candidates(height)
+        for x, y in spots:
+            if fits(x, y, width, height):
+                return _key_text(msp, key, height, (x, y))
+
+    _, spots = candidates(full_height)
+    insert = next((s for s in spots if point_in_polygon(*s, room)), spots[0])
+    return _key_text(msp, key, full_height, insert)
+
+
+def _key_text(msp, key: str, height: float, insert: tuple[float, float]):
+    return msp.add_text(key, height=height, dxfattribs={"layer": key, "insert": insert})
 
 
 def _ensure_layer(doc, layer_name: str, color: int) -> None:

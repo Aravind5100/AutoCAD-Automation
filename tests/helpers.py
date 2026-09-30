@@ -96,17 +96,26 @@ def run_pipeline(drawing_path: str, sheet_path: str, log=None,
     summary = match_rooms(scan.room_texts, assoc, df, room_col,
                           [building_col, floor_col, room_col])
     doc, created = write_room_layers(
-        drawing_path, summary.results, building_col, floor_col, room_col, "0132",
-        scan.existing_annotation_room_ids, log_fn=log,
+        scan.doc, summary.results, scan.room_texts, building_col, floor_col, room_col,
+        "0132", scan.existing_annotation_room_ids, log_fn=log,
     )
     return scan, summary, doc, created
 
 
 def room_layer_polygons(doc) -> dict[str, list]:
     """{layer name: [polygon entities]} for every layer written by the tool."""
+    return _ours(doc, "LWPOLYLINE POLYLINE")
+
+
+def room_layer_labels(doc) -> dict[str, list]:
+    """{layer name: [key TEXT entities]} for every layer written by the tool."""
+    return _ours(doc, "TEXT")
+
+
+def _ours(doc, query: str) -> dict[str, list]:
     from metadata_utils import read_xdata
     result: dict[str, list] = {}
-    for e in doc.modelspace().query("LWPOLYLINE POLYLINE"):
+    for e in doc.modelspace().query(query):
         if read_xdata(e) is not None:
             result.setdefault(e.dxf.layer, []).append(e)
     return result

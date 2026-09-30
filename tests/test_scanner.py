@@ -44,6 +44,18 @@ class TestLabelsAndPolygons(TempDirTestCase):
         self.assertEqual(scan.polygons, [])
         self.assertEqual(scan.room_texts, [])
 
+    def test_multiline_mtext_uses_room_number_line(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        msp.add_mtext("022\\P170", dxfattribs={"insert": (0, 0), "char_height": 5})
+        msp.add_mtext("OFFICE\\P103", dxfattribs={"insert": (0, 50), "char_height": 5})
+        msp.add_mtext("{\\fArial|b0;017BA}\\P40", dxfattribs={"insert": (0, 90)})
+        doc.saveas(self.path("m.dxf"))
+        scan = scan_drawing(self.path("m.dxf"))
+        self.assertEqual([t.text for t in scan.room_texts], ["022", "103", "017BA"])
+        box = scan.room_texts[0].label_bbox
+        self.assertLess(box[1], -5)          # two lines tall: bottom is well below the insert
+
     def test_missing_file(self):
         with self.assertRaises(AutoCADError):
             scan_drawing(self.path("nope.dxf"))

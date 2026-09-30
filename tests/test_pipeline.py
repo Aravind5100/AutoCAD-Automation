@@ -16,10 +16,11 @@ from tests.helpers import (
     ROOMS_CSV,
     TempDirTestCase,
     make_plan,
+    room_layer_labels,
     room_layer_polygons,
     run_pipeline,
 )
-from utils import polygon_area
+from utils import point_in_polygon, polygon_area
 
 
 class TestRoomLayers(TempDirTestCase):
@@ -62,7 +63,47 @@ class TestRoomLayers(TempDirTestCase):
         for e in msp:
             if e.dxf.handle in orig_layers:          # every original entity kept its layer
                 self.assertEqual(e.dxf.layer, orig_layers[e.dxf.handle])
-        self.assertEqual(len(msp), len(orig_layers) + 3)   # only the 3 copies were added
+        self.assertEqual(len(msp), len(orig_layers) + 6)   # 3 outline copies + 3 key labels
+
+    def test_key_label_written_under_each_room_label(self):
+        scan, _, _, out = self._run_and_save(self.plan, "out.dxf")
+        labels = room_layer_labels(out)
+        self.assertEqual(set(labels), set(EXPECTED_LAYERS))
+        by_room = {t.text: t for t in scan.room_texts}
+        for key, room in EXPECTED_LAYERS.items():
+            [tag] = labels[key]
+            self.assertEqual(tag.dxf.text, key)
+            self.assertEqual(read_xdata(tag).room_id, room)
+            src = by_room[room]
+            self.assertAlmostEqual(tag.dxf.height, src.text_height)
+            self.assertLess(tag.dxf.insert.y + tag.dxf.height, src.label_bbox[1])   # below label
+            self.assertAlmostEqual(tag.dxf.insert.x, src.label_bbox[0])
+
+    def test_key_label_shrinks_to_fit_small_room(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        room = [(0, 0), (30, 0), (30, 40), (0, 40)]   # narrower than a full-size key (~38.5)
+        msp.add_lwpolyline(room, close=True)
+        msp.add_text("101", dxfattribs={"insert": (3, 25), "height": 5})
+        doc.saveas(self.path("0132_SM.dxf"))
+        _, _, created, out = self._run_and_save(self.path("0132_SM.dxf"), "o.dxf")
+        [tag] = room_layer_labels(out)["0132-01-101"]
+        self.assertEqual(created, 1)
+        self.assertLess(tag.dxf.height, 5)                    # scaled down
+        self.assertTrue(point_in_polygon(tag.dxf.insert.x, tag.dxf.insert.y, room))
+
+    def test_two_line_labels_use_the_room_number_line(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        msp.add_lwpolyline([(0, 0), (100, 0), (100, 100), (0, 100)], close=True)
+        msp.add_lwpolyline([(100, 0), (200, 0), (200, 100), (100, 100)], close=True)
+        msp.add_mtext("101\\P170", dxfattribs={"insert": (20, 80), "char_height": 5})     # number / area
+        msp.add_mtext("OFFICE\\P102", dxfattribs={"insert": (120, 80), "char_height": 5})  # name / number
+        doc.saveas(self.path("0132_ML.dxf"))
+        scan, summary, created, out = self._run_and_save(self.path("0132_ML.dxf"), "o.dxf")
+        self.assertEqual(sorted(t.text for t in scan.room_texts), ["101", "102"])
+        self.assertEqual(created, 2)
+        self.assertEqual(set(room_layer_labels(out)), {"0132-01-101", "0132-01-102"})
 
     def test_source_polygon_handle_links_to_the_room(self):
         _, _, _, out = self._run_and_save(self.plan, "out.dxf")
@@ -85,6 +126,7 @@ class TestRoomLayers(TempDirTestCase):
         scan2, _, created2, out2 = self._run_and_save(self.path("run1.dxf"), "run2.dxf")
         self.assertEqual(scan2.existing_annotation_room_ids, {"101", "102", "103"})
         self.assertEqual(len(scan2.polygons), 4)          # copies not rescanned as rooms
+        self.assertEqual(len(scan2.room_texts), 3)        # key labels not rescanned as rooms
         self.assertEqual(created2, 0)
         self.assertEqual({k: len(v) for k, v in room_layer_polygons(out2).items()},
                          {k: 1 for k in EXPECTED_LAYERS})
@@ -130,7 +172,7 @@ class TestRoomLayers(TempDirTestCase):
 
     def test_nothing_to_write_returns_drawing(self):
         scan = scan_drawing(self.plan)
-        doc, created = write_room_layers(self.plan, [], "B", "F", "R", "0132",
+        doc, created = write_room_layers(self.plan, [], [], "B", "F", "R", "0132",
                                          scan.existing_annotation_room_ids)
         self.assertIsInstance(doc, ezdxf.document.Drawing)
         self.assertEqual(created, 0)

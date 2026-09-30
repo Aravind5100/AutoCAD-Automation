@@ -11,18 +11,13 @@ Manages the full workflow:
 
 import os
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import pythoncom
 
 from config import OUTPUT_SUFFIX
-from spreadsheet_loader import (
-    FileLoadError,
-    find_room_id_column_suggestion,
-    get_columns,
-    load_spreadsheet,
-)
 from config import ROOM_KEY_SEPARATOR
 from utils import (
     detect_building_column,
@@ -51,6 +46,16 @@ ENTRY_BG = "#45475a"
 SCROLLBAR_BG = "#45475a"
 
 
+def _preload_libraries():
+    """Import pandas / openpyxl / ezdxf in the background (first import is slow)."""
+    try:
+        import ezdxf  # noqa: F401
+        import openpyxl  # noqa: F401
+        import pandas  # noqa: F401
+    except Exception:
+        pass    # a real import error surfaces when the library is used
+
+
 class AppUI:
     """Main application window."""
 
@@ -72,8 +77,13 @@ class AppUI:
         self._columns: list[str] = []
         self._running = False
         self._last_output_dir: str | None = None
+        self._loading = False
 
         self._build_ui()
+
+        # Warm up the heavy libraries while the user picks files, so loading the
+        # spreadsheet and the first run don't pay for it
+        threading.Thread(target=_preload_libraries, daemon=True).start()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -311,19 +321,47 @@ class AppUI:
     # Spreadsheet column loading
     # ------------------------------------------------------------------
 
-    def _load_spreadsheet_columns(self, path: str):
-        self._set_status("Loading spreadsheet...")
+    def _load_spreadsheet_columns(self, path: str, background: bool = True):
+        """Load *path* (on a worker thread unless *background* is False)."""
+        self._loading = True
+        self._set_status("Loading spreadsheet... (large files take a while the first time)")
         self._log(f"Loading spreadsheet: {path}", tag="INFO")
-        try:
-            df = load_spreadsheet(path)
-        except FileLoadError as exc:
-            self._log(f"ERROR: {exc}", tag="ERROR")
-            messagebox.showerror("File Load Error", str(exc))
-            return
+        if background:
+            threading.Thread(target=self._load_spreadsheet_worker,
+                             args=(path, True), daemon=True).start()
+        else:
+            self._load_spreadsheet_worker(path, False)
 
+    def _load_spreadsheet_worker(self, path: str, from_thread: bool):
+        from spreadsheet_loader import FileLoadError, load_spreadsheet
+
+        start = time.monotonic()
+        try:
+            df = load_spreadsheet(path, use_cache=True)
+        except FileLoadError as exc:
+            result = lambda err=exc: self._on_spreadsheet_failed(err)
+        else:
+            elapsed = time.monotonic() - start
+            result = lambda: self._on_spreadsheet_loaded(df, elapsed)
+        if from_thread:
+            self.root.after(0, result)
+        else:
+            result()
+
+    def _on_spreadsheet_failed(self, exc):
+        self._loading = False
+        self._log(f"ERROR: {exc}", tag="ERROR")
+        self._set_status("Spreadsheet could not be loaded.")
+        messagebox.showerror("File Load Error", str(exc))
+
+    def _on_spreadsheet_loaded(self, df, elapsed: float):
+        from spreadsheet_loader import find_room_id_column_suggestion, get_columns
+
+        self._loading = False
         self._df = df
         self._columns = get_columns(df)
-        self._log(f"Loaded {len(df)} rows, {len(self._columns)} columns.", tag="SUCCESS")
+        self._log(f"Loaded {len(df)} rows, {len(self._columns)} columns "
+                  f"in {elapsed:.1f} s.", tag="SUCCESS")
         self._set_status(f"Spreadsheet loaded -- {len(self._columns)} columns.")
 
         # Room Identifier dropdown
@@ -362,6 +400,9 @@ class AppUI:
 
     def _on_run(self):
         if self._running:
+            return
+        if self._loading:
+            messagebox.showinfo("Please Wait", "The spreadsheet is still loading.")
             return
 
         if not self._spreadsheet_path.get():
@@ -573,8 +614,9 @@ class AppUI:
             self._set_status("Creating room layers...")
             self._log("Copying room polygons onto Building-Floor-Room layers...", tag="INFO")
             annotated_dxf_doc, inserted = write_room_layers(
-                dxf_path,
+                scan.doc,               # reuse the drawing the scanner already read
                 summary.results,
+                scan.room_texts,
                 building_col,
                 floor_col,
                 room_id_col,

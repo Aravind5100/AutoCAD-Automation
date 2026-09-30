@@ -3,15 +3,20 @@ spreadsheet_loader.py
 ---------------------
 Load CSV / XLS / XLSX spreadsheets with configurable header rows,
 normalised column handling, and robust error reporting.
+
+Large Excel files are slow to parse (a 36,000-row workbook takes ~13 s), so
+the cleaned result can be cached on disk and reused until the file changes.
 """
 
 from __future__ import annotations
 
+import glob
+import hashlib
 import os
 
 import pandas as pd
 
-from config import CSV_HEADER_ROW, EXCEL_HEADER_ROW
+from config import CSV_HEADER_ROW, EXCEL_HEADER_ROW, SPREADSHEET_CACHE_DIR
 from utils import normalize_col
 
 
@@ -31,6 +36,7 @@ def load_spreadsheet(
     path: str,
     excel_header: int = EXCEL_HEADER_ROW,
     csv_header: int = CSV_HEADER_ROW,
+    use_cache: bool = False,
 ) -> pd.DataFrame:
     """Load a spreadsheet file and return a cleaned DataFrame.
 
@@ -42,6 +48,10 @@ def load_spreadsheet(
         0-indexed header row for Excel files (default from config).
     csv_header : int
         0-indexed header row for CSV files (default from config).
+    use_cache : bool
+        Reuse / store the cleaned result in SPREADSHEET_CACHE_DIR. The cache
+        entry is tied to the file's path, size and modification time and to
+        the header-row settings, so any change to the file is picked up.
 
     Returns
     -------
@@ -58,6 +68,13 @@ def load_spreadsheet(
 
     ext = os.path.splitext(path)[1].lower()
 
+    cache_file = _cache_file(path, excel_header, csv_header) if use_cache else None
+    if cache_file and os.path.isfile(cache_file):
+        try:
+            return pd.read_pickle(cache_file)
+        except Exception:
+            pass    # unreadable cache entry: fall back to parsing the file
+
     try:
         if ext == ".csv":
             df = _load_csv(path, csv_header)
@@ -73,7 +90,36 @@ def load_spreadsheet(
     except Exception as exc:
         raise FileLoadError(f"Failed to read '{os.path.basename(path)}': {exc}") from exc
 
-    return _clean_dataframe(df)
+    df = _clean_dataframe(df)
+    if cache_file:
+        _store_cache(df, cache_file)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+
+def _cache_file(path: str, excel_header: int, csv_header: int) -> str:
+    """<cache dir>/<path hash>_<state hash>.pkl for the file's current state."""
+    abs_path = os.path.normcase(os.path.abspath(path))
+    st = os.stat(abs_path)
+    path_key = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:16]
+    state = f"{st.st_size}|{st.st_mtime_ns}|{excel_header}|{csv_header}|{pd.__version__}"
+    state_key = hashlib.sha1(state.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(SPREADSHEET_CACHE_DIR, f"{path_key}_{state_key}.pkl")
+
+
+def _store_cache(df: pd.DataFrame, cache_file: str) -> None:
+    """Save *df*, replacing older entries for the same spreadsheet. Best effort."""
+    try:
+        os.makedirs(SPREADSHEET_CACHE_DIR, exist_ok=True)
+        path_key = os.path.basename(cache_file).split("_")[0]
+        for old in glob.glob(os.path.join(SPREADSHEET_CACHE_DIR, f"{path_key}_*.pkl")):
+            os.remove(old)
+        df.to_pickle(cache_file)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------

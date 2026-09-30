@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import ezdxf
+from ezdxf import bbox as ezdxf_bbox
 
 from config import (
     DEFAULT_TEXT_HEIGHT,
@@ -59,6 +60,8 @@ class RoomText:
     layer: str = ""
     text_height: float = DEFAULT_TEXT_HEIGHT
     text_style: str = ""
+    # (min_x, min_y, max_x, max_y) of the whole label, or None if it could not be measured
+    label_bbox: tuple[float, float, float, float] | None = None
 
 
 @dataclass
@@ -82,6 +85,8 @@ class ScanResult:
     total_entities: int = 0
     existing_annotation_room_ids: set[str] = field(default_factory=set)
     unreadable_entities: int = 0    # TEXT/MTEXT/polylines that raised while reading
+    # The parsed drawing, so the writer can reuse it instead of reading the file again
+    doc: object = field(default=None, repr=False, compare=False)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +130,7 @@ def scan_drawing(
     total = len(entities)
 
     _log(log_fn, f"  Scanning {total} model-space entities...")
-    result = ScanResult(total_entities=total)
+    result = ScanResult(total_entities=total, doc=doc)
 
     for i, entity in enumerate(entities):
         if i > 0 and i % SCAN_PROGRESS_INTERVAL == 0:
@@ -157,12 +162,13 @@ def scan_drawing(
 
 def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
     """Extract properties from a TEXT/MTEXT entity and add to result."""
+    # Our own key labels from a previous run are not room labels
+    if read_xdata(entity) is not None:
+        return
+
     try:
         if etype == "MTEXT":
-            # plain_text() removes all inline formatting codes; \~ (non-breaking
-            # space) is left literal, and paragraph breaks become newlines
-            plain = entity.plain_text().replace("\\~", " ")
-            text_val = " ".join(plain.split())
+            text_val = _mtext_room_line(entity)
         else:
             text_val = str(entity.dxf.text).strip()
     except Exception:
@@ -208,7 +214,37 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
         layer=layer,
         text_height=height,
         text_style=style,
+        label_bbox=_label_bbox(entity),
     ))
+
+
+def _mtext_room_line(entity) -> str:
+    """Return the line of a multi-line MTEXT label that holds the room number.
+
+    Room labels often stack the number over other text (``022`` over the
+    area ``170``, or ``OFFICE`` over ``101``): the first line that looks like
+    a room identifier is used; otherwise the first line.
+    """
+    # plain_text() removes inline formatting codes and turns paragraph
+    # breaks into newlines; \~ (non-breaking space) is left literal
+    plain = entity.plain_text().replace("\\~", " ")
+    lines = [" ".join(line.split()) for line in plain.splitlines()]
+    lines = [line for line in lines if line]
+    for line in lines:
+        if is_room_identifier(line):
+            return line
+    return lines[0] if lines else ""
+
+
+def _label_bbox(entity) -> tuple[float, float, float, float] | None:
+    """Extent of the whole label (all lines), used to place the key tag under it."""
+    try:
+        box = ezdxf_bbox.extents([entity], fast=True)
+        if not box.has_data:
+            return None
+        return (box.extmin.x, box.extmin.y, box.extmax.x, box.extmax.y)
+    except Exception:
+        return None
 
 
 def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
