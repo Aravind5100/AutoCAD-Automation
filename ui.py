@@ -4,27 +4,27 @@ ui.py
 Tkinter-based GUI for the AutoCAD Room Annotation tool.
 Manages the full workflow:
   Step 1 - File selection (spreadsheet + DWG)
-  Step 2 - Column selection (room ID + building ID + fields to insert)
+  Step 2 - Column selection (room, building and floor columns)
   Step 3 - Preview & run the update process
   Step 4 - Display summary results
 """
 
+import os
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import pythoncom
 
-from spreadsheet_loader import (
-    FileLoadError,
-    find_room_id_column_suggestion,
-    get_columns,
-    load_spreadsheet,
-)
+from config import OUTPUT_SUFFIX
+from config import ROOM_KEY_SEPARATOR, ROOM_LAYER_DEFAULT
 from utils import (
     detect_building_column,
+    detect_floor_column,
     extract_building_id,
     filter_dataframe_by_building,
+    build_room_key,
 )
 
 
@@ -46,6 +46,16 @@ ENTRY_BG = "#45475a"
 SCROLLBAR_BG = "#45475a"
 
 
+def _preload_libraries():
+    """Import pandas / openpyxl / ezdxf in the background (first import is slow)."""
+    try:
+        import ezdxf  # noqa: F401
+        import openpyxl  # noqa: F401
+        import pandas  # noqa: F401
+    except Exception:
+        pass    # a real import error surfaces when the library is used
+
+
 class AppUI:
     """Main application window."""
 
@@ -61,13 +71,19 @@ class AppUI:
         self._dwg_path = tk.StringVar()
         self._room_id_col = tk.StringVar()
         self._building_col = tk.StringVar()
+        self._floor_col = tk.StringVar()
         self._building_id = tk.StringVar()
         self._df = None
         self._columns: list[str] = []
-        self._field_vars: dict[str, tk.BooleanVar] = {}
         self._running = False
+        self._last_output_dir: str | None = None
+        self._loading = False
 
         self._build_ui()
+
+        # Warm up the heavy libraries while the user picks files, so loading the
+        # spreadsheet and the first run don't pay for it
+        threading.Thread(target=_preload_libraries, daemon=True).start()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -130,78 +146,51 @@ class AppUI:
         card = self._card(parent, "Step 2 -- Configure Columns")
 
         # Room Identifier dropdown
-        rid_row = tk.Frame(card, bg=BG_CARD)
-        rid_row.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(rid_row, text="Room Identifier:", bg=BG_CARD, fg=FG_PRIMARY,
-                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
-        self._room_id_combo = ttk.Combobox(
-            rid_row, textvariable=self._room_id_col,
-            state="disabled", font=("Segoe UI", 9), width=30,
-        )
-        self._room_id_combo.pack(side=tk.LEFT)
+        self._room_id_combo = self._column_row(card, "Room Identifier:", self._room_id_col)
 
         # Building Identifier column dropdown
-        bld_row = tk.Frame(card, bg=BG_CARD)
-        bld_row.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(bld_row, text="Building Column:", bg=BG_CARD, fg=FG_PRIMARY,
-                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
-        self._building_col_combo = ttk.Combobox(
-            bld_row, textvariable=self._building_col,
-            state="disabled", font=("Segoe UI", 9), width=30,
-        )
-        self._building_col_combo.pack(side=tk.LEFT)
+        self._building_col_combo = self._column_row(card, "Building Column:", self._building_col)
+
+        # Floor Code column dropdown
+        self._floor_col_combo = self._column_row(card, "Floor Column:", self._floor_col)
 
         self._style_combobox()
 
-        # Fields to insert checklist
-        tk.Label(card, text="Columns to insert into AutoCAD drawing:",
-                 bg=BG_CARD, fg=FG_PRIMARY,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        # What gets written
+        sep = ROOM_KEY_SEPARATOR
+        tk.Label(
+            card,
+            text=(f"Each matched room gets an outline copy and a key text on layer "
+                  f"{ROOM_LAYER_DEFAULT}\n"
+                  f"key = [Building]{sep}[Floor]{sep}[Room]   e.g.  0132{sep}01{sep}101"),
+            bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), justify=tk.LEFT,
+        ).pack(anchor="w", pady=(4, 0))
+        self._key_example = tk.Label(card, text="", bg=BG_CARD, fg=FG_SUCCESS,
+                                     font=("Consolas", 9), justify=tk.LEFT)
+        self._key_example.pack(anchor="w")
+        for var in (self._room_id_col, self._building_col, self._floor_col):
+            var.trace_add("write", lambda *_: self._update_key_example())
 
-        scroll_outer = tk.Frame(card, bg=BG_CARD)
-        scroll_outer.pack(fill=tk.BOTH, expand=True)
+    def _column_row(self, card, label: str, variable: tk.StringVar) -> ttk.Combobox:
+        row = tk.Frame(card, bg=BG_CARD)
+        row.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(row, text=label, bg=BG_CARD, fg=FG_PRIMARY, width=16, anchor="w",
+                 font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        combo = ttk.Combobox(row, textvariable=variable, state="disabled",
+                             font=("Segoe UI", 9), width=30)
+        combo.pack(side=tk.LEFT)
+        return combo
 
-        canvas = tk.Canvas(scroll_outer, bg=BG_CARD, highlightthickness=0, height=110)
-        scrollbar = ttk.Scrollbar(scroll_outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self._checkbox_frame = tk.Frame(canvas, bg=BG_CARD)
-        self._checkbox_window = canvas.create_window(
-            (0, 0), window=self._checkbox_frame, anchor="nw"
-        )
-
-        def _on_frame_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _on_canvas_configure(event):
-            canvas.itemconfig(self._checkbox_window, width=event.width)
-
-        self._checkbox_frame.bind("<Configure>", _on_frame_configure)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        def _on_mousewheel(e):
-            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
-
-        self._columns_canvas = canvas
-
-        # Select all / deselect all
-        btn_row = tk.Frame(card, bg=BG_CARD)
-        btn_row.pack(fill=tk.X, pady=(6, 0))
-        self._btn(btn_row, "Select All", self._select_all_fields,
-                  small=True).pack(side=tk.LEFT, padx=(0, 6))
-        self._btn(btn_row, "Deselect All", self._deselect_all_fields,
-                  small=True).pack(side=tk.LEFT)
-
-        # Placeholder
-        self._no_file_label = tk.Label(
-            self._checkbox_frame, text="Load a spreadsheet file first.",
-            bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9, "italic"),
-        )
-        self._no_file_label.pack(anchor="w", padx=4, pady=4)
+    def _update_key_example(self):
+        """Show the layer name the first spreadsheet row would get."""
+        cols = (self._building_col.get(), self._floor_col.get(), self._room_id_col.get())
+        if self._df is None or self._df.empty or not all(c in self._df.columns for c in cols):
+            self._key_example.configure(text="")
+            return
+        row = self._df.iloc[0]
+        key = build_room_key(row[cols[0]], row[cols[1]], row[cols[2]])
+        self._key_example.configure(
+            text=f"First row -> {key}" if key else "First row -> (a value is empty)")
 
     def _build_run_section(self, parent):
         row = tk.Frame(parent, bg=BG_DARK)
@@ -312,7 +301,12 @@ class AppUI:
     def _browse_dwg(self):
         path = filedialog.askopenfilename(
             title="Select AutoCAD Drawing",
-            filetypes=[("AutoCAD Drawing", "*.dwg"), ("All files", "*.*")],
+            filetypes=[
+                ("AutoCAD files", "*.dwg *.dxf"),
+                ("DWG files", "*.dwg"),
+                ("DXF files", "*.dxf"),
+                ("All files", "*.*"),
+            ],
         )
         if not path:
             return
@@ -328,19 +322,47 @@ class AppUI:
     # Spreadsheet column loading
     # ------------------------------------------------------------------
 
-    def _load_spreadsheet_columns(self, path: str):
-        self._set_status("Loading spreadsheet...")
+    def _load_spreadsheet_columns(self, path: str, background: bool = True):
+        """Load *path* (on a worker thread unless *background* is False)."""
+        self._loading = True
+        self._set_status("Loading spreadsheet... (large files take a while the first time)")
         self._log(f"Loading spreadsheet: {path}", tag="INFO")
-        try:
-            df = load_spreadsheet(path)
-        except FileLoadError as exc:
-            self._log(f"ERROR: {exc}", tag="ERROR")
-            messagebox.showerror("File Load Error", str(exc))
-            return
+        if background:
+            threading.Thread(target=self._load_spreadsheet_worker,
+                             args=(path, True), daemon=True).start()
+        else:
+            self._load_spreadsheet_worker(path, False)
 
+    def _load_spreadsheet_worker(self, path: str, from_thread: bool):
+        from spreadsheet_loader import FileLoadError, load_spreadsheet
+
+        start = time.monotonic()
+        try:
+            df = load_spreadsheet(path, use_cache=True)
+        except FileLoadError as exc:
+            result = lambda err=exc: self._on_spreadsheet_failed(err)
+        else:
+            elapsed = time.monotonic() - start
+            result = lambda: self._on_spreadsheet_loaded(df, elapsed)
+        if from_thread:
+            self.root.after(0, result)
+        else:
+            result()
+
+    def _on_spreadsheet_failed(self, exc):
+        self._loading = False
+        self._log(f"ERROR: {exc}", tag="ERROR")
+        self._set_status("Spreadsheet could not be loaded.")
+        messagebox.showerror("File Load Error", str(exc))
+
+    def _on_spreadsheet_loaded(self, df, elapsed: float):
+        from spreadsheet_loader import find_room_id_column_suggestion, get_columns
+
+        self._loading = False
         self._df = df
         self._columns = get_columns(df)
-        self._log(f"Loaded {len(df)} rows, {len(self._columns)} columns.", tag="SUCCESS")
+        self._log(f"Loaded {len(df)} rows, {len(self._columns)} columns "
+                  f"in {elapsed:.1f} s.", tag="SUCCESS")
         self._set_status(f"Spreadsheet loaded -- {len(self._columns)} columns.")
 
         # Room Identifier dropdown
@@ -361,44 +383,17 @@ class AppUI:
         elif self._columns:
             self._building_col.set(self._columns[0])
 
-        self._build_column_checkboxes()
+        # Floor column dropdown
+        self._floor_col_combo.configure(state="readonly", values=self._columns)
+        floor_suggestion = detect_floor_column(self._columns)
+        if floor_suggestion:
+            self._floor_col.set(floor_suggestion)
+            self._log(f"Auto-detected Floor column: '{floor_suggestion}'", tag="SUCCESS")
+        else:
+            self._floor_col.set("")
+            self._log("No Floor column detected -- please choose it in Step 2.", tag="WARN")
 
-    def _build_column_checkboxes(self):
-        for widget in self._checkbox_frame.winfo_children():
-            widget.destroy()
-        self._field_vars.clear()
-
-        if not self._columns:
-            tk.Label(self._checkbox_frame, text="No columns found.",
-                     bg=BG_CARD, fg=FG_SECONDARY,
-                     font=("Segoe UI", 9, "italic")).pack(anchor="w")
-            return
-
-        col_count = 2
-        for idx, col in enumerate(self._columns):
-            var = tk.BooleanVar(value=False)
-            self._field_vars[col] = var
-            cb = tk.Checkbutton(
-                self._checkbox_frame, text=col, variable=var,
-                bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_PANEL,
-                activebackground=BG_CARD, activeforeground=FG_ACCENT,
-                font=("Segoe UI", 9), anchor="w",
-            )
-            cb.grid(row=idx // col_count, column=idx % col_count,
-                    sticky="w", padx=(0, 20))
-
-        self._checkbox_frame.update_idletasks()
-        self._columns_canvas.configure(
-            scrollregion=self._columns_canvas.bbox("all")
-        )
-
-    def _select_all_fields(self):
-        for var in self._field_vars.values():
-            var.set(True)
-
-    def _deselect_all_fields(self):
-        for var in self._field_vars.values():
-            var.set(False)
+        self._update_key_example()
 
     # ------------------------------------------------------------------
     # Run button
@@ -406,6 +401,9 @@ class AppUI:
 
     def _on_run(self):
         if self._running:
+            return
+        if self._loading:
+            messagebox.showinfo("Please Wait", "The spreadsheet is still loading.")
             return
 
         if not self._spreadsheet_path.get():
@@ -428,11 +426,21 @@ class AppUI:
             messagebox.showwarning("Missing Input", "Please select the Building Identifier column.")
             return
 
-        selected_cols = [col for col, var in self._field_vars.items() if var.get()]
-        if not selected_cols:
+        floor_col = self._floor_col.get()
+        if not floor_col:
+            messagebox.showwarning("Missing Input", "Please select the Floor column.")
+            return
+
+        if len({room_id_col, building_col, floor_col}) < 3:
             messagebox.showwarning(
-                "Missing Input", "Please select at least one column to insert."
+                "Check Columns",
+                "Room, Building and Floor must be three different columns.",
             )
+            return
+
+        output_path = self._ask_output_path(self._dwg_path.get())
+        if not output_path:
+            self._log("Run cancelled -- no output location chosen.", tag="WARN")
             return
 
         self._set_running(True)
@@ -443,23 +451,85 @@ class AppUI:
                 self._df.copy(),
                 room_id_col,
                 building_col,
-                selected_cols,
+                floor_col,
+                output_path,
             ),
             daemon=True,
         )
         thread.start()
 
-    def _run_annotation(self, dwg_path, df, room_id_col, building_col, selected_cols):
+    def _ask_output_path(self, input_path: str) -> str | None:
+        """Ask where to save the annotated drawing. Returns None if cancelled.
+
+        The dialog never starts in the input drawing's folder, and the
+        original drawing itself is refused as a target.
+        """
+        base, ext = os.path.splitext(os.path.basename(input_path))
+        ext = ext.lower()
+        kind = "DWG" if ext == ".dwg" else "DXF"
+
+        initial_dir = self._last_output_dir
+        if not initial_dir or not os.path.isdir(initial_dir):
+            documents = os.path.join(os.path.expanduser("~"), "Documents")
+            initial_dir = documents if os.path.isdir(documents) else os.path.expanduser("~")
+
+        input_norm = os.path.normcase(os.path.abspath(input_path))
+        while True:
+            path = filedialog.asksaveasfilename(
+                title="Save Annotated Drawing As",
+                initialdir=initial_dir,
+                initialfile=f"{base}{OUTPUT_SUFFIX}{ext}",
+                defaultextension=ext,
+                filetypes=[(f"{kind} files", f"*{ext}")],
+                confirmoverwrite=True,
+            )
+            if not path:
+                return None
+            if os.path.splitext(path)[1].lower() != ext:
+                path += ext
+            if os.path.normcase(os.path.abspath(path)) == input_norm:
+                messagebox.showerror(
+                    "Choose Another Name",
+                    "The original drawing cannot be overwritten.\n"
+                    "Please choose a different file name or folder.",
+                )
+                initial_dir = os.path.dirname(path)
+                continue
+            self._last_output_dir = os.path.dirname(path)
+            return path
+
+    def _run_annotation(self, dwg_path, df, room_id_col, building_col,
+                        floor_col, output_path):
         """Worker thread: full annotation pipeline."""
         from autocad_scanner import AutoCADError, scan_drawing
         from polygon_matcher import associate_texts_with_polygons, match_rooms
-        from annotation_writer import write_annotations
+        from annotation_writer import write_room_layers
+        from dwg_converter import (
+            ConversionError, dwg_to_dxf, dxf_doc_to_dwg, make_work_dir, remove_work_dir,
+        )
 
         pythoncom.CoInitialize()
+        work_dir = make_work_dir()   # intermediate files only; deleted below
         try:
             self._log("=" * 56, tag="HEADER")
             self._log("Starting AutoCAD Room Annotation", tag="HEADER")
             self._log("=" * 56, tag="HEADER")
+            self._log(f"Output will be saved to: {output_path}", tag="INFO")
+
+            # --- Phase 0: DWG -> DXF conversion (if needed) ---
+            is_dwg = dwg_path.lower().endswith(".dwg")
+            if is_dwg:
+                self._set_status("Converting DWG to DXF...")
+                self._log("Converting DWG -> DXF via AutoCAD...", tag="INFO")
+                try:
+                    dxf_path = dwg_to_dxf(dwg_path, work_dir, log_fn=self._log)
+                except ConversionError as exc:
+                    self._log(f"Conversion ERROR: {exc}", tag="ERROR")
+                    self._set_status("Error -- DWG conversion failed.")
+                    self._dialog("error", "Conversion Error", str(exc))
+                    return
+            else:
+                dxf_path = dwg_path
 
             # --- Phase 1: Building validation ---
             building_id = extract_building_id(dwg_path)
@@ -475,7 +545,8 @@ class AppUI:
                     tag="ERROR",
                 )
                 self._set_status(f"Stopped -- no rows for building {building_id}.")
-                messagebox.showwarning(
+                self._dialog(
+                    "warning",
                     "No Matching Rows",
                     f"No spreadsheet rows match building {building_id}.\n"
                     "Update cancelled.",
@@ -487,10 +558,10 @@ class AppUI:
                 tag="SUCCESS",
             )
 
-            # --- Phase 2: Scan drawing ---
-            self._set_status("Scanning AutoCAD drawing...")
-            self._log("Scanning drawing for room texts and polygons...", tag="INFO")
-            scan = scan_drawing(dwg_path, log_fn=self._log)
+            # --- Phase 2: Scan DXF ---
+            self._set_status("Scanning drawing (ezdxf)...")
+            self._log("Scanning DXF for room texts and polygons...", tag="INFO")
+            scan = scan_drawing(dxf_path, log_fn=self._log)
 
             if not scan.room_texts:
                 self._log(
@@ -512,7 +583,7 @@ class AppUI:
             self._log("Matching rooms to spreadsheet...", tag="INFO")
             summary = match_rooms(
                 scan.room_texts, associations, filtered_df,
-                room_id_col, selected_cols,
+                room_id_col, [building_col, floor_col, room_id_col],
             )
 
             # --- Preview ---
@@ -540,17 +611,42 @@ class AppUI:
                 self._set_status("Stopped -- no matches found.")
                 return
 
-            # --- Phase 5: Write annotations ---
-            self._set_status("Writing annotations to drawing...")
-            self._log("Inserting annotations with polygon linkage...", tag="INFO")
-            output_path, inserted = write_annotations(
-                dwg_path,
+            # --- Phase 5: Write room layers to in-memory DXF ---
+            self._set_status("Writing room keys...")
+            self._log(f"Writing room outlines and keys to layer {ROOM_LAYER_DEFAULT}...", tag="INFO")
+            annotated_dxf_doc, inserted = write_room_layers(
+                scan.doc,               # reuse the drawing the scanner already read
                 summary.results,
                 scan.room_texts,
+                building_col,
+                floor_col,
+                room_id_col,
                 building_id,
                 scan.existing_annotation_room_ids,
                 log_fn=self._log,
             )
+
+            # --- Phase 5b: Convert annotated DXF to DWG (no intermediate file) ---
+            if is_dwg:
+                self._set_status("Converting to DWG...")
+                self._log("Converting annotated DXF -> DWG...", tag="INFO")
+                try:
+                    output_path = dxf_doc_to_dwg(annotated_dxf_doc, output_path, work_dir, log_fn=self._log)
+                except ConversionError as exc:
+                    self._log(f"DXF->DWG conversion failed: {exc}", tag="ERROR")
+                    self._set_status("Error -- DXF->DWG conversion failed.")
+                    self._dialog("error", "Conversion Error", str(exc))
+                    return
+            else:
+                # If input was DXF, save the annotated DXF
+                self._log(f"Saving annotated DXF: {output_path}", tag="INFO")
+                try:
+                    annotated_dxf_doc.saveas(output_path)
+                except Exception as exc:
+                    self._log(f"Failed to save annotated DXF: {exc}", tag="ERROR")
+                    self._set_status("Error -- could not save output.")
+                    self._dialog("error", "Save Error", f"Could not save:\n{output_path}\n\n{exc}")
+                    return
 
             # --- Phase 6: Summary ---
             self._log("\n" + "=" * 56, tag="HEADER")
@@ -566,38 +662,47 @@ class AppUI:
                 f"  Unmatched rooms      : {unmatched_count}",
                 tag="WARN" if unmatched_count else "INFO",
             )
-            self._log(f"  Annotations inserted : {inserted}", tag="SUCCESS")
+            self._log(f"  Rooms written        : {inserted}", tag="SUCCESS")
             self._log(f"  Output file          : {output_path}", tag="SUCCESS")
             self._log("=" * 56, tag="HEADER")
 
-            self._set_status(f"Done -- {inserted} annotations inserted.")
-            messagebox.showinfo(
+            self._set_status(f"Done -- {inserted} rooms written.")
+            self._dialog(
+                "info",
                 "Complete",
-                f"Annotation complete!\n\n"
+                f"Room keys complete!\n\n"
                 f"Building        : {building_id}\n"
                 f"Polygon links   : {summary.texts_with_polygon}\n"
                 f"Matched rooms   : {summary.matched_count}\n"
-                f"Inserted        : {inserted}\n"
+                f"Rooms written   : {inserted} (layer {ROOM_LAYER_DEFAULT})\n"
                 f"Output saved to :\n{output_path}",
             )
 
         except AutoCADError as exc:
             self._log(f"AutoCAD ERROR: {exc}", tag="ERROR")
             self._set_status("Error -- see log.")
-            messagebox.showerror("AutoCAD Error", str(exc))
+            self._dialog("error", "AutoCAD Error", str(exc))
 
         except Exception as exc:
             self._log(f"Unexpected error: {exc}", tag="ERROR")
             self._set_status("Unexpected error -- see log.")
-            messagebox.showerror("Error", f"An unexpected error occurred:\n{exc}")
+            self._dialog("error", "Error", f"An unexpected error occurred:\n{exc}")
 
         finally:
+            remove_work_dir(work_dir)
             self._set_running(False)
             pythoncom.CoUninitialize()
 
     # ------------------------------------------------------------------
     # UI state helpers (thread-safe)
     # ------------------------------------------------------------------
+
+    def _dialog(self, kind: str, title: str, message: str):
+        """Show a message box from any thread (Tk calls must run on the main thread)."""
+        show = {"info": messagebox.showinfo,
+                "warning": messagebox.showwarning,
+                "error": messagebox.showerror}[kind]
+        self.root.after(0, lambda: show(title, message))
 
     def _set_running(self, running: bool):
         def _update():

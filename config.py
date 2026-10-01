@@ -5,11 +5,19 @@ Centralised configuration constants for the AutoCAD Room Annotation tool.
 All tuneable values live here so they can be adjusted without touching logic.
 """
 
+import os
+
+
 # ---------------------------------------------------------------------------
 # Spreadsheet
 # ---------------------------------------------------------------------------
 EXCEL_HEADER_ROW: int = 2          # 0-indexed; 2 → 3rd row is the header
 CSV_HEADER_ROW: int = 0            # 0-indexed; 0 → 1st row
+# Parsed spreadsheets are cached here so re-loading an unchanged file is instant
+SPREADSHEET_CACHE_DIR: str = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+    "RoomAnnotator", "spreadsheet_cache",
+)
 
 # ---------------------------------------------------------------------------
 # Building identifier
@@ -17,13 +25,23 @@ CSV_HEADER_ROW: int = 0            # 0-indexed; 0 → 1st row
 BUILDING_ID_LENGTH: int = 4
 
 # ---------------------------------------------------------------------------
-# AutoCAD annotation output
+# Room layer output (ArcGIS)
 # ---------------------------------------------------------------------------
-OUTPUT_LAYER: str = "ROOM_INFO_AI"
-ANNOTATION_COLOR: int = 3          # AutoCAD colour index (3 = green)
+# All matched rooms go on ONE layer (name editable in the app). For each room:
+# a copy of its outline + a text label with its key
+#   <Building><SEP><Floor><SEP><Room>      e.g. 0132-01-101
+# with the three values taken as-is from the matched spreadsheet row.
+ROOM_LAYER_DEFAULT: str = "ROOM_KEYS"
+ROOM_KEY_SEPARATOR: str = "-"
+ROOM_LAYER_COLOR: int = 3          # AutoCAD colour index (3 = green)
+# A text label with the key is written on the room layer, just under the room
+# label: same height as the room label, this many label-heights of gap below it
+ROOM_TAG_GAP_FACTOR: float = 0.5
+# Characters AutoCAD does not allow in layer names (checked for the room layer name)
+LAYER_NAME_FORBIDDEN_CHARS: str = '<>/\\":;?*|=`'
+# Outline layers written by the old block-based versions; never room boundaries
+LEGACY_OUTLINE_LAYERS: tuple[str, ...] = ("ROOM_BLOCK_OUTLINE",)
 DEFAULT_TEXT_HEIGHT: float = 10.0
-MTEXT_WIDTH_FACTOR: float = 25.0   # MTEXT width = text_height × this
-VERTICAL_SPACING_MULTIPLIER: float = 1.6
 
 # ---------------------------------------------------------------------------
 # Room identifier heuristics
@@ -43,6 +61,20 @@ MAX_NEAREST_DISTANCE: float = 500.0      # max centroid distance for fallback
 # Metadata / XData
 # ---------------------------------------------------------------------------
 XDATA_APP_NAME: str = "ROOM_INFO_AI"
+
+# ---------------------------------------------------------------------------
+# DWG ↔ DXF conversion
+# ---------------------------------------------------------------------------
+# AutoCAD AcSaveAsType codes (from the AutoCAD type library):
+#   1 = R12 DXF (lossy — do not use), 64 = 2018 DWG (= acNative), 65 = 2018 DXF
+ACAD_DXF_FORMAT: int = 65                # DWG -> DXF: 2018 DXF keeps the full drawing
+ACAD_DWG_FORMAT: int = 64                # DXF -> DWG: native 2018 DWG
+COM_RETRY_SECONDS: float = 60.0          # keep retrying calls AutoCAD rejects while busy
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+OUTPUT_SUFFIX: str = "_annotated"        # suggested output name: <input>_annotated.<ext>
 
 # ---------------------------------------------------------------------------
 # Scan performance

@@ -2,21 +2,24 @@
 main.py
 -------
 Entry point for the AutoCAD Room Annotation Tool.
-Initialises the Tkinter root window and launches the AppUI.
+
+Starts the PySide6 (Qt) window. ``python main.py --tk`` starts the previous
+Tkinter window instead (kept for comparison while the Qt UI is new).
 """
 
+import os
 import sys
-import tkinter as tk
 
 # Ensure the project root is on the Python path when run directly
-import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ui import AppUI
 
+def main_tk():
+    """Create the Tkinter root window and start its event loop."""
+    import tkinter as tk
 
-def main():
-    """Create the root window and start the Tkinter event loop."""
+    from ui import AppUI
+
     root = tk.Tk()
 
     # High-DPI awareness on Windows so the UI is not blurry
@@ -26,7 +29,7 @@ def main():
     except Exception:
         pass
 
-    app = AppUI(root)
+    AppUI(root)
 
     # Centre the window on screen
     root.update_idletasks()
@@ -34,11 +37,20 @@ def main():
     h = root.winfo_height()
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-    x = (sw - w) // 2
-    y = (sh - h) // 2
-    root.geometry(f"{w}x{h}+{x}+{y}")
+    root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
     root.mainloop()
+
+
+def main():
+    if sys.argv[1:2] == ["--selftest"]:
+        from selftest import main as selftest
+        sys.exit(selftest(sys.argv[2:]))
+    if "--tk" in sys.argv[1:]:
+        main_tk()
+        return
+    from qt_ui import main as main_qt
+    sys.exit(main_qt())
 
 
 if __name__ == "__main__":
