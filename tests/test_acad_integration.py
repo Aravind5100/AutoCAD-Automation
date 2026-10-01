@@ -51,10 +51,14 @@ class TestAutoCADRoundTrip(TempDirTestCase):
 
     def tearDown(self):
         import pythoncom
-        self.assertEqual(self._sysvars(), self.sysvars_before, "AutoCAD settings changed")
-        self.assertEqual(self._doc_names(), self.docs_before, "drawings left open")
-        pythoncom.CoUninitialize()
-        super().tearDown()
+        try:
+            self.assertEqual(self._sysvars(), self.sysvars_before, "AutoCAD settings changed")
+            # Drawings opened or closed by hand in AutoCAD during the test also trip this
+            self.assertEqual(self._doc_names(), self.docs_before,
+                             "open drawings changed (left open by the test, or changed by hand)")
+        finally:
+            pythoncom.CoUninitialize()
+            super().tearDown()          # always remove the temp folder
 
     # -- helpers ----------------------------------------------------------
     def _doc_names(self):
