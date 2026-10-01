@@ -13,16 +13,17 @@
 
 ## 1. TL;DR
 
-A Windows desktop tool (Python + Tkinter) that takes:
+A Windows desktop tool (Python + PySide6/Qt; Tkinter on `dev_exe`) that takes:
 
 - a **spreadsheet** of room data (CSV / XLS / XLSX, e.g. department, occupant, area), and
 - an **AutoCAD floor plan** (DWG, or DXF),
 
 finds the room-number labels and room-boundary polygons in the drawing, matches each room to its
-spreadsheet row, and copies each matched room's boundary polygon onto its own **layer named
-`[Building]-[Floor]-[Room]`** (e.g. `0132-01-101`, values as-is from the spreadsheet row), with XData
-linking the copy to the source polygon. ArcGIS reads the key from the polygon's Layer field and joins
-the facilities table on it. No blocks or attribute values are written (changed from blocks on 2026-09-29).
+spreadsheet row, and writes every matched room onto **ONE layer** (default `ROOM_KEYS`, editable
+in the app): a copy of the room's boundary polygon + a TEXT with its key `[Building]-[Floor]-[Room]`
+(e.g. `0132-01-101`, values as-is from the spreadsheet row), both carrying XData linking them to the
+source polygon. In ArcGIS the key annotations are spatially joined to the polygons on that layer.
+No blocks or attributes (blocks → per-room layers 2026-09-29 → one layer 2026-10-01, D16).
 Output: a new DWG (or DXF) at a location the user picks in a Save As dialog (suggested name `<name>_annotated.<ext>`, starting in Documents). The input file is never overwritten and cannot be chosen as the target.
 
 AutoCAD itself is only used (over COM) to convert DWG ↔ DXF. All drawing reading and writing is
@@ -138,12 +139,13 @@ Phase 6 │ summary to log + messagebox
 
 | Item | Value |
 |---|---|
-| Layer per room | `<Building>-<Floor>-<Room>` (`ROOM_KEY_SEPARATOR`), values **as-is** from the matched spreadsheet row, whitespace-trimmed; characters in `LAYER_NAME_FORBIDDEN_CHARS` replaced with `_`; colour 3 (green) |
-| Geometry | a closed **copy** of the associated room polygon on that layer (LWPOLYLINE; POLYLINE for R12 DXF). Originals untouched |
+| Room layer | ONE layer for all rooms: `RunRequest.layer` / the app's "Room layer" box (default `ROOM_LAYER_DEFAULT` = `ROOM_KEYS`, validated by `utils.layer_name_problem`); colour 3 |
+| Key | `<Building>-<Floor>-<Room>` (`ROOM_KEY_SEPARATOR`), values **exactly as in the spreadsheet** (trimmed only — no character replacement since D16) |
+| Geometry | a closed **copy** of the associated room polygon on the room layer (LWPOLYLINE; POLYLINE for R12 DXF). Originals untouched |
 | Key label | TEXT = key on the room layer, inside the room where it fits (see pipeline) |
 | Not written | blocks, attributes, outlines/rectangles (a room with no polygon is skipped, not approximated) |
 | XData app | `ROOM_INFO_AI` on the copy, six 1000-strings: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type("room_layer")` |
-| ArcGIS | polygon feature class → `Layer` field = key → join the facilities table on it |
+| ArcGIS | polygon + annotation feature classes filtered to the room layer → spatial join (annotation in polygon) puts the key on each polygon → join the facilities table on the key |
 
 Handles in XData are handles in the intermediate DXF. [verified 2026-09-29 with AutoCAD 2023] they stay valid in the
 final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed at the room polygon.
@@ -165,8 +167,9 @@ final DWG: after DXF → DWG → DXF, every XData polygon handle still pointed a
 | Sep 29 | D14 room layers | Blocks replaced by one `Building-Floor-Room` layer per room (polygon copy + XData); Floor column in GUI with live key preview; dedup via XData on copies; README rewritten for the ArcGIS layer workflow. 63 offline + 2 AutoCAD tests pass. |
 | Sep 29 | real-data fixes | First real run (0036, Room_Data.xlsx 36k rows): only 3/62 rooms matched because labels are two-line MTEXT (number over area) → use the room-ID line (now 62/62). Visible key TEXT added on each room layer, placed inside the room (58/62 fully inside; 3 narrow shafts/stair can't fit). Spreadsheet: 13–25 s parse → background load + cache (0.1–0.2 s when unchanged). Writer reuses the scanner's drawing. Typical run ≈ 12 s (AutoCAD ≈ 4 s per conversion; first open after idle ≈ 19 s). |
 | Sep 30 | `ui-pyside6` branch | PySide6 window (`qt_ui.py`) + UI-independent `pipeline.py` + per-room outcomes in the writer. Verified off-screen on the real 0036 drawing: 62 layers, 81 result rows, ≈10–15 s. 83 tests pass. |
+| Oct 1 | D16 one room layer | `main` created from `ui-pyside6` (GitHub default still to be switched by the owner). All rooms on one editable layer (`ROOM_KEYS`); Results column "Key"; real 0036 run: 62 outline copies + 62 key texts, all on ROOM_KEYS, 9 s. 87 tests pass. |
 
-Branch note: there is **no `main` branch** — local branches are `master`, `dev_mtext`, `dev_exe`; remote default is `dev_mtext`.
+Branch note (2026-10-01): `main` = current (PySide6, one room layer); `ui-pyside6` = same as main at creation; `dev_exe` = stable Tkinter; `dev_mtext`/`master` = initial commit. GitHub default is still `dev_mtext` until switched.
 
 ---
 
@@ -184,6 +187,7 @@ Branch note: there is **no `main` branch** — local branches are `master`, `dev
 | D13 | User chooses the **output location** (Save As dialog, starts in Documents, remembers last folder, refuses the input file) | Owner decision 2026-09-29: don't save next to the original by default | code |
 | D14 | **Room layers instead of blocks** (2026-09-29): each matched room's polygon copied onto a layer named `Building-Floor-Room`; values as-is from the spreadsheet row; Floor from a spreadsheet column; copy (not move) the polygon; unmatched rooms skipped; no blocks/attributes | Owner decision: ArcGIS works better with layers than blocks on CAD import; the key is joined to the facilities table in ArcGIS | owner |
 | D15 | **PySide6 desktop UI on branch `ui-pyside6`**; `dev_exe` stays the stable Tkinter version (2026-09-30) | Owner: keep the current version stable, try Qt on a branch. Features chosen: per-room results table, editable Building ID, Cancel, light/dark toggle + bigger fonts (after-run buttons not chosen) | owner |
+| D16 | **One layer for all rooms** (2026-10-01), name editable (default `ROOM_KEYS`); per room an outline copy + key TEXT; key text kept exactly as in the spreadsheet | Owner: that is how ArcGIS reads it (one layer, key joined spatially). Supersedes the per-room layers of D14 | owner |
 | D8 | Distribute as **ZIP + setup.bat/run.bat**, not a PyInstaller exe | [inferred] exe build of pywin32/pandas is large and brittle and trips antivirus; ZIP + venv is transparent. d00322d: "replaced by ZIP distribution". Branch `dev_exe` + re-added spec suggests this is still open | history |
 | D9 | Suppress AutoCAD dialogs (FILEDIA/CMDDIA/PROXYNOTICE = 0) | Modal dialogs block COM calls forever ("hangs at Converting DWG → DXF") | history (d00322d, README troubleshooting) |
 | D10 | Single-pass scan into plain dataclasses; no live entity references after scan | Performance and separation (matcher/writer never touch the CAD layer) | history |
@@ -293,7 +297,7 @@ in `tearDown` that AutoCAD's sysvars and open drawings are unchanged.
 - AutoCAD `AcSaveAsType`: 1 = R12 DXF, 12/13 = 2000 DWG/DXF, 24/25 = 2004, 36/37 = 2007, 48/49 = 2010, 60/61 = 2013, 64/65 = 2018; `acNative` = 64.
 - COM from a thread needs `pythoncom.CoInitialize()` / `CoUninitialize()` (already done in `_run_annotation`).
 - `win32com.client.Dispatch` will *launch* AutoCAD if it is not running (slow); the README asks users to start it first.
-- Git: work happens on `dev_exe` (tracks `origin/dev_exe`). There is no `main` branch; remote default is `dev_mtext` (still at the initial commit). Ask before committing/pushing.
+- Git: work happens on **`main`** (created 2026-10-01 from `ui-pyside6`; PySide6 UI). `dev_exe` = stable Tkinter version, `dev_mtext` = initial commit and still the GitHub default until the owner switches it to `main`. Ask before committing/pushing.
 
 ### 10.5 Open questions for the owner
 1. Exe (PyInstaller, `dev_exe` branch, re-added spec) or ZIP distribution — which is final?

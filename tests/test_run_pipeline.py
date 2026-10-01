@@ -9,7 +9,7 @@ import unittest
 
 import pipeline
 from spreadsheet_loader import load_spreadsheet
-from tests.helpers import EXPECTED_LAYERS, ROOMS_CSV, TempDirTestCase, make_plan
+from tests.helpers import EXPECTED_KEYS, ROOMS_CSV, TempDirTestCase, make_plan
 
 
 class TestPipelineRun(TempDirTestCase):
@@ -33,12 +33,18 @@ class TestPipelineRun(TempDirTestCase):
         self.assertTrue(os.path.exists(self.path("out.dxf")))
         self.assertEqual((res.created, res.matched, res.sheet_rows), (3, 3, 4))
         rows = {r.room: r for r in res.rows}
-        for layer, room in EXPECTED_LAYERS.items():
-            self.assertEqual((rows[room].layer, rows[room].status), (layer, "created"))
+        for key, room in EXPECTED_KEYS.items():
+            self.assertEqual((rows[room].key, rows[room].status), (key, "created"))
         self.assertEqual(rows["104"].status, pipeline.NOT_IN_DRAWING)
         self.assertEqual(steps[0], "Filtering spreadsheet for building 0132...")
         self.assertEqual(len(steps), 6)                   # DXF input: no AutoCAD steps
         self.assertFalse([m for lvl, m in logs if lvl == pipeline.ERROR])
+
+    def test_layer_from_request(self):
+        import ezdxf
+        from tests.helpers import tool_layers
+        pipeline.run(self.request(layer="0132-ROOMS"))
+        self.assertEqual(tool_layers(ezdxf.readfile(self.path("out.dxf"))), {"0132-ROOMS"})
 
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):
@@ -49,7 +55,7 @@ class TestPipelineRun(TempDirTestCase):
         # file name says 0132, but the user corrected the building to 9999
         res = pipeline.run(self.request(building_id="9999"))
         self.assertEqual((res.created, res.sheet_rows), (1, 1))
-        self.assertEqual([r.layer for r in res.rows if r.status == "created"], ["9999-01-101"])
+        self.assertEqual([r.key for r in res.rows if r.status == "created"], ["9999-01-101"])
 
     def test_cancel_writes_nothing(self):
         calls = []

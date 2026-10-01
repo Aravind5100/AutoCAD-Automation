@@ -15,11 +15,11 @@ import ezdxf
 
 from metadata_utils import read_xdata
 from tests.helpers import (
-    EXPECTED_LAYERS,
+    EXPECTED_KEYS,
     ROOMS_CSV,
     TempDirTestCase,
     make_plan,
-    room_layer_polygons,
+    room_key_polygons,
     run_pipeline,
 )
 
@@ -103,10 +103,11 @@ class TestAutoCADRoundTrip(TempDirTestCase):
         check = self._read_dwg(out)
         msp = check.modelspace()
         handles = {e.dxf.handle for e in msp}
-        layers = room_layer_polygons(check)
-        self.assertEqual(set(layers), set(EXPECTED_LAYERS))             # room layers survive
-        for name, room in EXPECTED_LAYERS.items():
-            self.assertIn(name, check.layers)
+        layers = room_key_polygons(check)
+        self.assertEqual(set(layers), set(EXPECTED_KEYS))             # room keys survive
+        self.assertIn("ROOM_KEYS", check.layers)                       # the one room layer
+        for name, room in EXPECTED_KEYS.items():
+            self.assertEqual(layers[name][0].dxf.layer, "ROOM_KEYS")
             meta = read_xdata(layers[name][0])
             self.assertEqual(meta.room_id, room)
             self.assertIn(meta.polygon_handle, handles)                 # polygon link holds

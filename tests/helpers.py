@@ -28,8 +28,8 @@ ROOMS_CSV = (
     "9999,01,101,Other building\n"
 )
 
-# Layer names the plan + ROOMS_CSV must produce (values used as-is)
-EXPECTED_LAYERS = {"0132-01-101": "101", "0132-01-102": "102", "0132-1-103": "103"}
+# Room keys the plan + ROOMS_CSV must produce (values used as-is) -> room
+EXPECTED_KEYS = {"0132-01-101": "101", "0132-01-102": "102", "0132-1-103": "103"}
 
 
 class TempDirTestCase(unittest.TestCase):
@@ -102,20 +102,31 @@ def run_pipeline(drawing_path: str, sheet_path: str, log=None,
     return scan, summary, doc, created
 
 
-def room_layer_polygons(doc) -> dict[str, list]:
-    """{layer name: [polygon entities]} for every layer written by the tool."""
-    return _ours(doc, "LWPOLYLINE POLYLINE")
-
-
-def room_layer_labels(doc) -> dict[str, list]:
-    """{layer name: [key TEXT entities]} for every layer written by the tool."""
-    return _ours(doc, "TEXT")
-
-
-def _ours(doc, query: str) -> dict[str, list]:
+def room_key_labels(doc) -> dict[str, list]:
+    """{room key: [key TEXT entities]} written by the tool (found by their XData)."""
     from metadata_utils import read_xdata
     result: dict[str, list] = {}
-    for e in doc.modelspace().query(query):
+    for e in doc.modelspace().query("TEXT"):
         if read_xdata(e) is not None:
-            result.setdefault(e.dxf.layer, []).append(e)
+            result.setdefault(e.dxf.text, []).append(e)
     return result
+
+
+def room_key_polygons(doc) -> dict[str, list]:
+    """{room key: [outline copies]} written by the tool; the key comes from the
+    key label of the same room (both carry the room ID in their XData)."""
+    from metadata_utils import read_xdata
+    key_of_room = {read_xdata(t).room_id: key
+                   for key, texts in room_key_labels(doc).items() for t in texts}
+    result: dict[str, list] = {}
+    for e in doc.modelspace().query("LWPOLYLINE POLYLINE"):
+        meta = read_xdata(e)
+        if meta is not None:
+            result.setdefault(key_of_room.get(meta.room_id, meta.room_id), []).append(e)
+    return result
+
+
+def tool_layers(doc) -> set[str]:
+    """Layers of every entity written by the tool."""
+    from metadata_utils import read_xdata
+    return {e.dxf.layer for e in doc.modelspace() if read_xdata(e) is not None}

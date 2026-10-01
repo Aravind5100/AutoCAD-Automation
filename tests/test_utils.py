@@ -12,6 +12,7 @@ from utils import (
     detect_floor_column,
     extract_building_id,
     is_room_identifier,
+    layer_name_problem,
     normalize_col,
     normalize_room_id,
     point_in_polygon,
@@ -91,12 +92,18 @@ class TestRoomKey(unittest.TestCase):
         self.assertEqual(build_room_key("0132", "1", "102A"), "0132-1-102A")
         self.assertEqual(build_room_key(" engr ", "B1", "LAB-101"), "engr-B1-LAB-101")
 
-    def test_forbidden_layer_characters_replaced(self):
-        self.assertEqual(build_room_key("0132", "1/2", 'R<1>:"x"'), "0132-1_2-R_1___x_")
+    def test_key_characters_kept_as_is(self):
+        self.assertEqual(build_room_key("0132", "1/2", "R:1"), "0132-1/2-R:1")
 
     def test_empty_part_gives_none(self):
         for parts in (("", "01", "101"), ("0132", " ", "101"), ("0132", "01", None)):
             self.assertIsNone(build_room_key(*parts), parts)
+
+    def test_layer_name_problem(self):
+        self.assertIsNone(layer_name_problem("ROOM_KEYS"))
+        self.assertIsNone(layer_name_problem("0036-ROOMS"))
+        self.assertIn("Enter", layer_name_problem("  "))
+        self.assertIn(":", layer_name_problem("A:B"))
 
     def test_floor_column_detected(self):
         self.assertEqual(detect_floor_column(["Bldg", "Floor_Code", "Room"]), "Floor_Code")

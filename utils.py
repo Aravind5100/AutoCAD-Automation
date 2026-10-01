@@ -239,20 +239,30 @@ def is_valid_room_polygon(
 # Room layer key
 # ---------------------------------------------------------------------------
 
-_LAYER_NAME_TRANSLATION = str.maketrans({c: "_" for c in LAYER_NAME_FORBIDDEN_CHARS})
+def layer_name_problem(name: str) -> str | None:
+    """Why *name* cannot be used as an AutoCAD layer name, or None if it can."""
+    name = (name or "").strip()
+    if not name:
+        return "Enter a layer name."
+    bad = sorted({c for c in name if c in LAYER_NAME_FORBIDDEN_CHARS})
+    if bad:
+        return f"A layer name cannot contain {' '.join(bad)}"
+    if len(name) > 255:
+        return "A layer name can be at most 255 characters."
+    return None
 
 
 def build_room_key(building, floor, room) -> str | None:
-    """Build the room layer name ``<building>-<floor>-<room>``.
+    """Build the room key ``<building>-<floor>-<room>``, written as text in the drawing.
 
-    Values are used as-is (only surrounding whitespace is trimmed); characters
-    AutoCAD forbids in layer names are replaced with ``_``. Returns None when
-    any part is empty, because the key would then be ambiguous.
+    Values are used exactly as in the spreadsheet (only surrounding whitespace
+    is trimmed), so the key matches the facilities data for joins. Returns
+    None when any part is empty, because the key would then be ambiguous.
 
     Examples: ``("0132", "01", "101")`` → ``0132-01-101``;
-    ``("0132", "1", "LAB/2")`` → ``0132-1-LAB_2``
+    ``("0132", "1", "LAB/2")`` → ``0132-1-LAB/2``
     """
     parts = ["" if v is None else str(v).strip() for v in (building, floor, room)]
     if not all(parts):
         return None
-    return ROOM_KEY_SEPARATOR.join(parts).translate(_LAYER_NAME_TRANSLATION)
+    return ROOM_KEY_SEPARATOR.join(parts)

@@ -2,8 +2,9 @@
 
 A Python desktop application that reads room data from a spreadsheet (CSV/Excel),
 scans an AutoCAD DWG drawing for room identifiers and polygons, matches them,
-and copies each matched room's boundary onto its own **ArcGIS-ready layer** named
-`[Building]-[Floor]-[Room]` (e.g. `0132-01-101`) — without overwriting the original file.
+and writes every matched room onto **one ArcGIS-ready layer** (default `ROOM_KEYS`): a copy of
+the room's outline plus a text label with its key `[Building]-[Floor]-[Room]` (e.g.
+`0132-01-101`) — without overwriting the original file.
 
 ---
 
@@ -156,12 +157,15 @@ Open AutoCAD first, then press any key in the terminal to continue.
 
 The **Room**, **Building** and **Floor** columns are detected automatically (e.g. "Room
 Identifier", "Building Identifier", "Floor Code"); change them in the drop-downs if needed.
-They must be three different columns. The green preview shows a real layer name for the
+They must be three different columns. The green preview shows a real room key for the
 building you are processing, e.g. `e.g.  0036-1-001`.
 
-### 3. Create Room Layers
+**Room layer** is the one layer that receives every room (default `ROOM_KEYS`; your last
+choice is remembered). Layer names cannot contain `< > / \ " : ; ? * | = `` ` ``.
 
-**Create Room Layers** is enabled once everything above is set (hover over it to see what is
+### 3. Write Room Keys
+
+**Write Room Keys** is enabled once everything above is set (hover over it to see what is
 missing). Click it and choose **where to save** the result (suggested name
 `<original_name>_annotated.dwg`, starting in your Documents folder — the original drawing
 cannot be chosen).
@@ -172,8 +176,8 @@ The progress bar and status line follow each step:
 3. Scan the drawing for room labels and room outlines
 4. Link each label to its room outline
 5. Match rooms to the spreadsheet
-6. Copy each matched room's outline onto its `Building-Floor-Room` layer and write the key
-   as a text label inside the room
+6. Put a copy of each matched room's outline and its key text (inside the room) on the
+   room layer
 7. Convert back to DWG and save it where you chose
 
 **Cancel** stops the run after the current step; nothing is saved.
@@ -184,9 +188,9 @@ The **Results** tab lists every room, with a filter (**Show**) and a summary lin
 
 | Status | Meaning |
 |---|---|
-| ✓ Created | Layer and key label written |
+| ✓ Created | Outline copy and key text written |
 | ⚠ Check | Created, but worth a look — e.g. the key label does not fit inside a very small room, the label was linked to the nearest outline, or two labels share one outline |
-| – Skipped / ✗ Failed | No layer written; the Note says why (no outline found, empty Floor value, already done…) |
+| – Skipped / ✗ Failed | Nothing written; the Note says why (no outline found, empty Floor value, already done…) |
 | ○ Not in spreadsheet | A room label in the drawing has no spreadsheet row (e.g. `ELECT1` vs `ELEC1`) |
 | ○ Not in drawing | A spreadsheet row for this building has no label in this drawing (often another floor) |
 
@@ -219,7 +223,7 @@ DWG File (input)
 [Match rooms to spreadsheet]  -- Room IDs matched case-insensitively
   |
   v
-[ezdxf: Room layers]         -- Room polygon copies on Building-Floor-Room layers
+[ezdxf: Room layer]          -- Outline copies + key texts on one layer (ROOM_KEYS)
   |
   v
 [AutoCAD COM: SaveAs DWG]     -- AutoCAD converts back to DWG format
@@ -284,7 +288,7 @@ The spreadsheet is filtered to only rows matching this building ID before matchi
 
 | File | Description |
 |---|---|
-| `<name>_annotated.dwg` (name and folder are your choice) | The original drawing plus one `Building-Floor-Room` layer per matched room, saved as a native AutoCAD 2018 DWG. |
+| `<name>_annotated.dwg` (name and folder are your choice) | The original drawing plus the room layer (outline copy + key text per matched room), saved as a native AutoCAD 2018 DWG. |
 
 The original DWG is **never modified**, and nothing is written next to it:
 
@@ -296,46 +300,47 @@ The original DWG is **never modified**, and nothing is written next to it:
 - AutoCAD's dialog settings (FILEDIA, CMDDIA, PROXYNOTICE) are switched off only
   while converting and **restored** afterwards.
 
-**Running again is safe:** rooms that already have a room layer in the drawing
+**Running again is safe:** rooms that already have a key in the drawing
 are skipped (the log reports how many).
 
 ---
 
 ## ArcGIS Compatibility
 
-Room data is delivered through **layers**, which ArcGIS handles better than blocks when
-it imports a CAD drawing. Every matched room gets its own layer:
+All matched rooms go on **one layer** (default `ROOM_KEYS`, set in the app). For each room
+the layer holds:
+
+- a **copy** of the room's boundary polygon, and
+- a **text label with the room key** inside the room:
 
 ```
 <Building>-<Floor>-<Room>        e.g.  0132-01-101
 ```
 
 - The three values are taken **as-is** from the matched spreadsheet row (so `01` stays
-  `01`, and `1` stays `1`), which keeps the name identical to your facilities data.
-- The layer holds a **copy** of the room's boundary polygon and a **text label with the
-  key**, placed just under the room number so you can see which rooms were processed.
-  The original polygon, room label and the drawing's own layers are not changed.
-- Characters AutoCAD does not allow in layer names (`< > / \ " : ; ? * | = `` ` ``) are
-  replaced with `_`.
+  `01`, and `1` stays `1`), which keeps the key identical to your facilities data.
+- The original polygons, room labels and the drawing's own layers are not changed.
 - No blocks or attribute values are written.
 
 ### How to Use It in ArcGIS
 
-1. **Add Data** → select the annotated `.dwg` file → choose its **Polygon** feature class.
-2. Each room polygon's **Layer** field holds its key, e.g. `0132-01-101`.
+1. **Add Data** → the annotated `.dwg` file. Use its **Polygon** and **Annotation** feature
+   classes, both limited to the room layer (e.g. a definition query `Layer = 'ROOM_KEYS'`).
+2. **Spatial join**: join the key annotations to the room polygons that contain them, so
+   each polygon gets its key.
 3. To bring in other spreadsheet columns (department, occupant, area, ...), **join** your
    spreadsheet to the polygons on that key. Build the same key in the spreadsheet by
    combining the Building, Floor and Room columns with `-`.
 
 ### When a Room Is Skipped
 
-The log lists every room that did not get a layer, and why:
+The log and the Results tab list every room that was not written, and why:
 
 | Log message | Meaning |
 |---|---|
 | no room boundary polygon found | The room label is not inside (or near) any closed polyline |
 | empty Building / Floor / Room value | One of the three spreadsheet values is blank |
-| a room layer already exists | The drawing was already processed for this room |
+| already has a room key | The drawing was already processed for this room |
 
 It also flags rooms worth checking: labels linked to the **nearest** polygon (label outside
 any polygon) and polygons that contain **more than one** room label.
@@ -355,12 +360,13 @@ All tuneable values are in `config.py`. You can edit this file with any text edi
 | `BUILDING_ID_LENGTH` | `4` | Number of characters from filename for building ID |
 | `SPREADSHEET_CACHE_DIR` | `%LOCALAPPDATA%\RoomAnnotator\spreadsheet_cache` | Parsed spreadsheets are cached here; an unchanged file loads instantly the next time |
 
-### Room Layers
+### Room Layer
 
 | Constant | Default | Description |
 |---|---|---|
-| `ROOM_KEY_SEPARATOR` | `-` | Separator between Building, Floor and Room in layer names |
-| `ROOM_LAYER_COLOR` | `3` | AutoCAD color index of the room layers (3 = green) |
+| `ROOM_LAYER_DEFAULT` | `ROOM_KEYS` | Default name of the one room layer (editable in the app) |
+| `ROOM_KEY_SEPARATOR` | `-` | Separator between Building, Floor and Room in the key |
+| `ROOM_LAYER_COLOR` | `3` | AutoCAD color index of the room layer (3 = green) |
 | `ROOM_TAG_GAP_FACTOR` | `0.5` | Gap between the room label and the key label, in label heights |
 
 ### Polygon Detection
@@ -475,9 +481,9 @@ AutoCAD-Annotator/
   config.py                 # All configurable constants (edit with Notepad)
   ui.py                     # Tkinter GUI (dark theme, log panel, progress bar)
   dwg_converter.py          # DWG <-> DXF conversion via AutoCAD COM (minimal)
-  autocad_scanner.py        # Scans DXF for room texts, polygons, existing room layers
+  autocad_scanner.py        # Scans DXF for room texts, polygons, existing room keys
   polygon_matcher.py        # Associates room text with room polygons + spreadsheet
-  annotation_writer.py      # Copies room polygons onto Building-Floor-Room layers
+  annotation_writer.py      # Writes outline copies + key texts onto the room layer
   metadata_utils.py         # XData linking each copy to its source polygon
   spreadsheet_loader.py     # CSV / XLS / XLSX file loading
   utils.py                  # Normalization, heuristics, geometry helpers

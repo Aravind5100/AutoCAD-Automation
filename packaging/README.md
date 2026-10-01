@@ -2,10 +2,10 @@
 
 Puts room information from a facilities spreadsheet into an AutoCAD floor plan, ready for ArcGIS.
 
-For every room that appears in both the drawing and the spreadsheet, the tool creates a
-layer named **`[Building]-[Floor]-[Room]`** (for example `0036-1-022`). The layer holds a copy
-of the room's outline and a text label with that name. In ArcGIS, each room polygon then
-carries this key in its **Layer** field, so it can be joined to the spreadsheet.
+For every room that appears in both the drawing and the spreadsheet, the tool writes a copy
+of the room's outline and a text label with its key **`[Building]-[Floor]-[Room]`** (for
+example `0036-1-022`). All rooms go on **one layer**, `ROOM_KEYS` by default. In ArcGIS the
+key labels are joined to the room polygons that contain them, and from there to the spreadsheet.
 
 The original drawing is never changed. The result is saved as a new file wherever you choose.
 
@@ -38,16 +38,17 @@ To remove it, delete the folder.
    - **Drawing → Browse…**: the floor plan (DWG or DXF).
    - **Building ID** is filled in from the start of the drawing's file name
      (`0036_Maintenance_01.dwg` → `0036`). Correct it if needed.
-2. **Columns**: check the **Room**, **Building** and **Floor** columns (normally detected
-   automatically). The green text shows an example layer name.
-3. Click **▶ Create Room Layers** and choose where to save the result.
+2. **Columns & output**: check the **Room**, **Building** and **Floor** columns (normally
+   detected automatically); the green text shows an example key. **Room layer** is the layer
+   that receives every room (default `ROOM_KEYS`).
+3. Click **▶ Write Room Keys** and choose where to save the result.
    For DWG files AutoCAD is started (or used, if already open) to convert the drawing;
    a floor plan takes about 10–20 seconds. **Cancel** stops after the current step and saves nothing.
 4. Read the **Results** tab. Use **Show** to filter:
 
 | Status | Meaning |
 |---|---|
-| ✓ Created | Layer and label written |
+| ✓ Created | Outline copy and key text written |
 | ⚠ Check | Written, but worth a look, e.g. the label does not fit inside a very small room |
 | – Skipped / ✗ Failed | Not written; the Note says why (no room outline found, empty Floor value…) |
 | ○ Not in spreadsheet | A room number in the drawing has no spreadsheet row, e.g. `ELECT1` vs `ELEC1` |
@@ -57,9 +58,11 @@ The **Log** tab shows every step. The ☾/☀ button (top right) switches betwee
 
 ## In ArcGIS
 
-Add the result drawing and use its **Polygon** layer. The **Layer** field holds
-`Building-Floor-Room`. To bring in other columns (department, occupant, area…), join the
-spreadsheet on the same key, built by combining its Building, Floor and Room columns with `-`.
+Add the result drawing. Use its **Polygon** and **Annotation** feature classes limited to the
+room layer (e.g. definition query `Layer = 'ROOM_KEYS'`), then **spatially join** the key
+annotations to the polygons that contain them. To bring in other columns (department,
+occupant, area…), join the spreadsheet on the key, built by combining its Building, Floor and
+Room columns with `-`.
 
 ## If something goes wrong
 

@@ -19,7 +19,7 @@ try:
 except ImportError:          # PySide6 not installed (stable Tkinter setup)
     HAS_QT = False
 
-from tests.helpers import EXPECTED_LAYERS, ROOMS_CSV, TempDirTestCase, make_plan
+from tests.helpers import EXPECTED_KEYS, ROOMS_CSV, TempDirTestCase, make_plan
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
@@ -76,6 +76,17 @@ class TestSetup(QtTestCase):
         self.assertFalse(self.win.run_btn.isEnabled())
         self.assertIn("three different columns", self.win.run_btn.toolTip())
 
+    def test_room_layer_box_validated_and_remembered(self):
+        self.ready_window()
+        self.assertEqual(self.win.layer_edit.text(), "ROOM_KEYS")
+        self.win.layer_edit.setText("BAD:NAME")
+        self.assertFalse(self.win.run_btn.isEnabled())
+        self.assertIn("Room layer", self.win.run_btn.toolTip())
+        self.win.layer_edit.setText("A-AREA-KEYS")
+        self.assertTrue(self.win.run_btn.isEnabled())
+        self.win.start_run(self.path("out.dxf"), wait=True)
+        self.assertEqual(self.win.settings.value("layer_name"), "A-AREA-KEYS")
+
     def test_theme_toggle_is_remembered(self):
         start = self.win.theme
         self.win._toggle_theme()
@@ -94,7 +105,7 @@ class TestRun(QtTestCase):
         self.assertEqual(self.win.result.created, 3)
         table = self.win.table
         layers = {table.item(r, 1).text() for r in range(table.rowCount())}
-        self.assertTrue(set(EXPECTED_LAYERS) <= layers)
+        self.assertTrue(set(EXPECTED_KEYS) <= layers)
         self.boxes["information"].assert_called_once()
         self.win.filter_combo.setCurrentText("Not matched")
         visible = [r for r in range(table.rowCount()) if not table.isRowHidden(r)]

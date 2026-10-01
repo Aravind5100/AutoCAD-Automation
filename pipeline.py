@@ -22,6 +22,7 @@ from typing import Callable
 import pandas as pd
 
 from annotation_writer import CREATED, SKIPPED, RoomOutcome, write_room_layers
+from config import ROOM_LAYER_DEFAULT
 from autocad_scanner import scan_drawing
 from polygon_matcher import associate_texts_with_polygons, match_rooms
 from utils import filter_dataframe_by_building
@@ -50,13 +51,14 @@ class RunRequest:
     building_col: str
     floor_col: str
     building_id: str                # e.g. "0036"; the user may have corrected it
+    layer: str = ROOM_LAYER_DEFAULT # the one layer that receives every room
 
 
 @dataclass
 class ResultRow:
     """One line of the per-room results table."""
     room: str
-    layer: str = ""
+    key: str = ""
     status: str = ""                # created / skipped / failed / not in spreadsheet / not in drawing
     note: str = ""
     needs_check: bool = False
@@ -132,12 +134,12 @@ def run(
             raise RunStopped("None of the room numbers in the drawing match the spreadsheet.\n"
                              "Check the Room column.")
 
-        checkpoint("Creating room layers...")
+        checkpoint(f"Writing rooms to layer {req.layer}...")
         outcomes: list[RoomOutcome] = []
         doc, result.created = write_room_layers(
             scan.doc, summary.results, scan.room_texts, req.building_col, req.floor_col,
             req.room_col, req.building_id, scan.existing_annotation_room_ids,
-            log_fn=plain_log, outcomes=outcomes,
+            log_fn=plain_log, outcomes=outcomes, layer=req.layer,
         )
         result.rows = _result_rows(outcomes, summary)
 
@@ -150,12 +152,13 @@ def run(
     finally:
         remove_work_dir(work_dir)
 
-    log(f"Done -- {result.created} room layers created. Saved to {req.output_path}", SUCCESS)
+    log(f"Done -- {result.created} rooms written to layer {req.layer}. "
+        f"Saved to {req.output_path}", SUCCESS)
     return result
 
 
 def _result_rows(outcomes: list[RoomOutcome], summary) -> list[ResultRow]:
-    rows = [ResultRow(o.room_id, o.layer, o.status, o.note, o.needs_check) for o in outcomes]
+    rows = [ResultRow(o.room_id, o.key, o.status, o.note, o.needs_check) for o in outcomes]
     rows += [ResultRow(r, status=NOT_IN_SHEET, note="room label in the drawing has no spreadsheet row")
              for r in summary.unmatched_drawing]
     rows += [ResultRow(r, status=NOT_IN_DRAWING, note="spreadsheet row has no room label in the drawing")

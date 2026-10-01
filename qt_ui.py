@@ -4,8 +4,8 @@ qt_ui.py
 PySide6 (Qt) desktop window for the Room Layer tool.
 
     1  Files     spreadsheet, drawing, editable Building ID
-    2  Columns   Room / Building / Floor + live layer-name preview
-    Run          Create Room Layers / Cancel, step progress
+    2  Output    Room / Building / Floor columns, key preview, the room layer name
+    Run          Write Room Keys / Cancel, step progress
     Results      one row per room (created / needs check / skipped / not matched)
     Log          full colour-coded log
 
@@ -46,13 +46,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import OUTPUT_SUFFIX, ROOM_KEY_SEPARATOR
+from config import OUTPUT_SUFFIX, ROOM_KEY_SEPARATOR, ROOM_LAYER_DEFAULT
 from utils import (
     build_room_key,
     detect_building_column,
     detect_floor_column,
     extract_building_id,
     filter_dataframe_by_building,
+    layer_name_problem,
 )
 
 APP_NAME = "Room Layer Tool"
@@ -271,7 +272,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title = QLabel(APP_NAME)
         title.setObjectName("title")
-        subtitle = QLabel("Spreadsheet rooms → Building-Floor-Room layers for ArcGIS")
+        subtitle = QLabel("Spreadsheet rooms → Building-Floor-Room keys on one layer for ArcGIS")
         subtitle.setObjectName("muted")
         self.theme_btn = QToolButton()
         self.theme_btn.clicked.connect(self._toggle_theme)
@@ -305,21 +306,32 @@ class MainWindow(QMainWindow):
         outer.addWidget(files)
 
         # 2 Columns
-        cols = QGroupBox("2   Columns")
+        cols = QGroupBox("2   Columns && output")
         cgrid = QGridLayout(cols)
         self.room_combo = self._combo(cgrid, 0, 0, "Room")
         self.building_combo = self._combo(cgrid, 0, 2, "Building")
         self.floor_combo = self._combo(cgrid, 0, 4, "Floor")
         sep = ROOM_KEY_SEPARATOR
-        cgrid.addWidget(QLabel(f"Layer name:  [Building]{sep}[Floor]{sep}[Room]"), 1, 0, 1, 3)
+        cgrid.addWidget(QLabel(f"Room key:  [Building]{sep}[Floor]{sep}[Room]"), 1, 0, 1, 3)
         self.preview = QLabel()
         self.preview.setObjectName("preview")
         cgrid.addWidget(self.preview, 1, 3, 1, 3)
+        cgrid.addWidget(QLabel("Room layer"), 2, 0)
+        self.layer_edit = QLineEdit(self.settings.value("layer_name", "") or ROOM_LAYER_DEFAULT)
+        self.layer_edit.setFixedWidth(220)
+        self.layer_edit.textChanged.connect(self._update_state)
+        layer_hint = QLabel("every room's outline copy and key text go on this one layer")
+        layer_hint.setObjectName("hint")
+        layer_row = QHBoxLayout()
+        layer_row.addWidget(self.layer_edit)
+        layer_row.addWidget(layer_hint)
+        layer_row.addStretch()
+        cgrid.addLayout(layer_row, 2, 1, 1, 5)
         outer.addWidget(cols)
 
         # Run row
         run_row = QHBoxLayout()
-        self.run_btn = QPushButton("▶  Create Room Layers")
+        self.run_btn = QPushButton("▶  Write Room Keys")
         self.run_btn.setObjectName("primary")
         self.run_btn.clicked.connect(self._start_run)
         self.cancel_btn = QPushButton("Cancel")
@@ -350,7 +362,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.summary, 1)
         rlay.addLayout(bar)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Room", "Layer", "Status", "Note"])
+        self.table.setHorizontalHeaderLabels(["Room", "Key", "Status", "Note"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
@@ -508,6 +520,9 @@ class MainWindow(QMainWindow):
             return "Room, Building and Floor must be three different columns."
         if not self.building_edit.text().strip():
             return "Enter the Building ID."
+        problem = layer_name_problem(self.layer_edit.text())
+        if problem:
+            return f"Room layer: {problem}"
         return None
 
     def _running(self) -> bool:
@@ -519,7 +534,8 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(not running and problem is None)
         self.run_btn.setToolTip(problem or "")
         self.cancel_btn.setEnabled(running)
-        for w in (self.building_edit, self.room_combo, self.building_combo, self.floor_combo):
+        for w in (self.building_edit, self.room_combo, self.building_combo, self.floor_combo,
+                  self.layer_edit):
             w.setEnabled(not running)
 
     def ask_output_path(self) -> str | None:
@@ -557,7 +573,9 @@ class MainWindow(QMainWindow):
             df=self.df, drawing_path=self.drawing_edit.text(), output_path=output_path,
             room_col=room, building_col=bldg, floor_col=floor,
             building_id=self.building_edit.text().strip(),
+            layer=self.layer_edit.text().strip(),
         )
+        self.settings.setValue("layer_name", request.layer)
         self.result = None
         self._fill_table([])
         self.summary.setText("Running…")
@@ -594,10 +612,11 @@ class MainWindow(QMainWindow):
         self.progress.setValue(self.progress.maximum())
         self._fill_table(result.rows)
         self.tabs.setCurrentIndex(0)
-        self.set_status(f"Done — {result.created} room layers created.  "
+        layer = self.worker.request.layer if self.worker else ""
+        self.set_status(f"Done — {result.created} rooms written to layer {layer}.  "
                         f"Saved as {os.path.basename(result.output_path)}")
         self.status.setToolTip(result.output_path)
-        QMessageBox.information(self, APP_NAME, f"{result.created} room layers created.\n\n"
+        QMessageBox.information(self, APP_NAME, f"{result.created} rooms written to layer {layer}.\n\n"
                                                 f"Saved to:\n{result.output_path}")
 
     def _on_stopped(self, message: str):
@@ -623,7 +642,7 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             text, color_key = status_label(row)
-            for c, value in enumerate((row.room, row.layer, text, row.note)):
+            for c, value in enumerate((row.room, row.key, text, row.note)):
                 item = QTableWidgetItem(value)
                 if c == 2:
                     item.setForeground(self.color(color_key))

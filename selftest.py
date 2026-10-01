@@ -59,11 +59,11 @@ def _check_pipeline(out: list[str]) -> bool:
             df=load_spreadsheet(sheet), drawing_path=plan,
             output_path=os.path.join(work, "out.dxf"), room_col="Room",
             building_col="Building ID", floor_col="Floor", building_id="0132"))
-        layers = [r.layer for r in result.rows if r.status == "created"]
-        if layers == ["0132-01-101"] and os.path.exists(os.path.join(work, "out.dxf")):
-            out.append("  OK    synthetic plan -> layer 0132-01-101 created")
+        keys = [r.key for r in result.rows if r.status == "created"]
+        if keys == ["0132-01-101"] and os.path.exists(os.path.join(work, "out.dxf")):
+            out.append("  OK    synthetic plan -> room key 0132-01-101 written")
             return True
-        out.append(f"  FAIL  synthetic plan produced {layers}")
+        out.append(f"  FAIL  synthetic plan produced {keys}")
         return False
     except Exception:
         out.append("  FAIL  pipeline error:\n" + traceback.format_exc())
@@ -98,7 +98,7 @@ def _real_job(out: list[str], drawing: str, sheet: str, building: str, output: s
             room_col=find_room_id_column_suggestion(cols),
             building_col=detect_building_column(cols),
             floor_col=detect_floor_column(cols), building_id=building))
-        out.append(f"  OK    real job: {result.created} layers, {len(result.rows)} result rows, "
+        out.append(f"  OK    real job: {result.created} rooms, {len(result.rows)} result rows, "
                    f"{time.monotonic() - start:.1f} s -> {output}")
         return True
     except Exception:

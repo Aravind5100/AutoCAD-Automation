@@ -12,11 +12,11 @@ from unittest import mock
 import ezdxf
 
 from tests.helpers import (
-    EXPECTED_LAYERS,
+    EXPECTED_KEYS,
     ROOMS_CSV,
     TempDirTestCase,
     make_plan,
-    room_layer_polygons,
+    room_key_polygons,
 )
 
 try:
@@ -128,8 +128,8 @@ class TestRunAnnotation(UITestCase):
                                      "Floor", out)
         self.assertTrue(os.path.exists(out))
         self.assertEqual(dialogs, [("info", "Complete")])
-        self.assertTrue(any("Room layers created  : 3" in m for _, m in logs), logs)
-        self.assertEqual(set(room_layer_polygons(ezdxf.readfile(out))), set(EXPECTED_LAYERS))
+        self.assertTrue(any("Rooms written        : 3" in m for _, m in logs), logs)
+        self.assertEqual(set(room_key_polygons(ezdxf.readfile(out))), set(EXPECTED_KEYS))
         self.assertEqual(sorted(os.listdir(self.tmp)), before)   # nothing new beside input
         self.assertFalse([m for t, m in logs if t == "ERROR"])
 
