@@ -39,6 +39,8 @@ To remove it, delete the folder.
    - **Drawing → Browse…**: the floor plan (DWG or DXF).
    - **Building ID** is filled in from the start of the drawing's file name
      (`0036_Maintenance_01.dwg` → `0036`). Correct it if needed.
+   - **Floor**: choose the floor this drawing shows (filled in when the building has only one).
+     Only that floor's spreadsheet rows are used.
 2. **Columns & output**: check the **Room**, **Building** and **Floor** columns (normally
    detected automatically); the green text shows an example key. The three **layer** boxes
    name the layers for outlines (`ROOM_OUTLINES`), keys (`ROOM_KEYS`) and details (`ROOM_DETAILS`).
@@ -78,6 +80,7 @@ Room columns with `-`.
   whether AutoCAD is installed. It does not touch your files and does not start AutoCAD.
   The last line should read `RESULT: PASS`.
 - **"No spreadsheet rows have … = 0036"**: the Building ID or the Building column is wrong.
+- **"… has no spreadsheet rows with … = 2"**: the Floor or the Floor column is wrong.
 - **Few or no rooms matched**: check the Room column. Room numbers must be written the same
   way in the drawing and the spreadsheet (`022` is not `22`).
 - **Seems stuck on "Converting DWG to DXF"**: switch to AutoCAD and close any open dialog

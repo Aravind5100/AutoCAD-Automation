@@ -3,7 +3,7 @@ qt_ui.py
 --------
 PySide6 (Qt) desktop window for the Room Layer tool.
 
-    1  Files     spreadsheet, drawing, editable Building ID
+    1  Files     spreadsheet, drawing, editable Building ID, Floor (drop-down of the building's floors)
     2  Output    Room / Building / Floor columns, key preview, the 3 output layer names,
                  room details (multi-select drop-down of spreadsheet columns, optional)
     Run          Write Room Keys / Cancel, step progress
@@ -63,6 +63,8 @@ from utils import (
     detect_floor_column,
     extract_building_id,
     filter_dataframe_by_building,
+    filter_dataframe_by_value,
+    floors_of_building,
     layer_name_problem,
 )
 
@@ -391,12 +393,24 @@ class MainWindow(QMainWindow):
         self.building_edit = QLineEdit()
         self.building_edit.setFixedWidth(120)
         self.building_edit.setPlaceholderText("e.g. 0036")
-        self.building_edit.textChanged.connect(self._update_preview)
-        hint = QLabel("filled from the file name — edit it if the file name is different")
+        self.building_edit.textChanged.connect(self._update_floors)
+        hint = QLabel("from the file name — edit if different")
         hint.setObjectName("hint")
+        self.floor_id_combo = QComboBox()
+        self.floor_id_combo.setEditable(True)
+        self.floor_id_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.floor_id_combo.setFixedWidth(120)
+        self.floor_id_combo.lineEdit().setPlaceholderText("choose")
+        self.floor_id_combo.currentTextChanged.connect(self._update_preview)
+        floor_hint = QLabel("the floor this drawing shows")
+        floor_hint.setObjectName("hint")
         row = QHBoxLayout()
         row.addWidget(self.building_edit)
         row.addWidget(hint)
+        row.addSpacing(16)
+        row.addWidget(QLabel("Floor"))
+        row.addWidget(self.floor_id_combo)
+        row.addWidget(floor_hint)
         row.addStretch()
         grid.addLayout(row, 2, 1, 1, 3)
         outer.addWidget(files)
@@ -505,7 +519,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel(label), r, c)
         combo = QComboBox()
         combo.setMinimumWidth(180)
-        combo.currentTextChanged.connect(self._update_preview)
+        combo.currentTextChanged.connect(self._update_floors)
         grid.addWidget(combo, r, c + 1)
         return combo
 
@@ -546,6 +560,7 @@ class MainWindow(QMainWindow):
         self.drawing_edit.setText(path)
         self.building_edit.setText(extract_building_id(path))
         self.log(f"Drawing: {path}  (Building ID {self.building_edit.text()})")
+        self._update_floors()
         self._update_state()
 
     def load_sheet(self, path: str, wait: bool = False):
@@ -586,7 +601,7 @@ class MainWindow(QMainWindow):
         if missing:
             self.log(f"Please choose the {', '.join(missing)} column(s) in step 2.", "WARN")
         self.set_status("Spreadsheet loaded.")
-        self._update_preview()
+        self._update_floors()
         self._update_state()
 
     def _sheet_failed(self, message: str):
@@ -611,15 +626,42 @@ class MainWindow(QMainWindow):
         return (self.room_combo.currentText(), self.building_combo.currentText(),
                 self.floor_combo.currentText())
 
+    def floor_id(self) -> str:
+        return self.floor_id_combo.currentText().strip()
+
+    def _update_floors(self, *_):
+        """Offer the floors of the chosen building; pick it when there is only one."""
+        _, bldg, floor = self.columns()
+        building = self.building_edit.text().strip()
+        floors = []
+        if self.df is not None and bldg and floor and building:
+            floors = floors_of_building(self.df, bldg, floor, building)
+        current = self.floor_id()
+        self.floor_id_combo.blockSignals(True)
+        self.floor_id_combo.clear()
+        self.floor_id_combo.addItems(floors)
+        if len(floors) == 1:
+            self.floor_id_combo.setCurrentIndex(0)
+        elif current in floors:
+            self.floor_id_combo.setCurrentText(current)
+        else:
+            self.floor_id_combo.setCurrentIndex(-1)
+            self.floor_id_combo.setEditText("")
+        self.floor_id_combo.blockSignals(False)
+        self._update_preview()
+
     def _update_preview(self, *_):
         room, bldg, floor = self.columns()
         text = ""
         if self.df is not None and not self.df.empty and all((room, bldg, floor)):
-            # Show a room of the building being processed, not just row 1 of the sheet
+            # Show a room of the building (and floor) being processed, not just row 1 of the sheet
             building = self.building_edit.text().strip()
             rows = filter_dataframe_by_building(self.df, bldg, building) if building else self.df
+            if not rows.empty and self.floor_id():
+                rows = filter_dataframe_by_value(rows, floor, self.floor_id())
             if rows.empty:
-                text = f"no rows for building {building} in the {bldg} column"
+                text = (f"no rows for building {building}"
+                        + (f", floor {self.floor_id()}" if self.floor_id() else ""))
             else:
                 first = rows.iloc[0]
                 key = build_room_key(first[bldg], first[floor], first[room])
@@ -643,6 +685,8 @@ class MainWindow(QMainWindow):
             return "Room, Building and Floor must be three different columns."
         if not self.building_edit.text().strip():
             return "Enter the Building ID."
+        if not self.floor_id():
+            return "Choose the Floor this drawing shows."
         layers = self.layer_names()
         used = ["outlines", "keys"] + (["details"] if self.detail_columns() else [])
         for name, label, _, _ in LAYER_FIELDS:
@@ -662,7 +706,7 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(not running and problem is None)
         self.run_btn.setToolTip(problem or "")
         self.cancel_btn.setEnabled(running)
-        for w in (self.building_edit, self.room_combo, self.building_combo, self.floor_combo,
+        for w in (self.building_edit, self.floor_id_combo, self.room_combo, self.building_combo, self.floor_combo,
                   self.detail_combo, *self.layer_edits.values()):
             w.setEnabled(not running)
 
@@ -701,6 +745,7 @@ class MainWindow(QMainWindow):
             df=self.df, drawing_path=self.drawing_edit.text(), output_path=output_path,
             room_col=room, building_col=bldg, floor_col=floor,
             building_id=self.building_edit.text().strip(),
+            floor_id=self.floor_id(),
             layers=pipeline.OutputLayers(**self.layer_names()),
             detail_cols=self.detail_columns(),
         )

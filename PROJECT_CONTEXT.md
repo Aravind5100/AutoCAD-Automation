@@ -20,7 +20,10 @@
   "tag" with the key `Building-Floor-Room`** (e.g. `0036-1-022`) inside the room on `ROOM_KEYS`, and — only
   if the user ticked detail columns (the "Room details" multi-select drop-down in step 2) — one TEXT per ticked column (e.g. Room Name)
   under the key on `ROOM_DETAILS`. All three names are editable in the app.
-- **Tests:** 91 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
+- **Floor box (D20, 2026-10-07):** step 1 has a Floor drop-down (the building's floors from the sheet; auto-picked
+  when there is only one; required). The run uses only that building + floor's rows — before, room numbers that
+  exist on several floors (4,580 in 114 of 158 buildings in the owner's sheet) silently took the first floor's row.
+- **Tests:** 95 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
   B10/B11). The 2 real-AutoCAD integration tests pass (`run_tests.bat acad`).
 - **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run
   (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
@@ -190,7 +193,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | `build_exe.spec` | PyInstaller 6 one-folder build of the Qt app → `dist\Room Layer Tool\Room Layer Tool.exe` (no UPX, Tkinter excluded, ezdxf data bundled) |
 | `packaging/README.md` | Short install/usage guide shipped inside the ZIP (for the supervisor) |
 | `setup.bat` / `run.bat` | Source setup (venv + pip incl. PySide6) and launch |
-| `tests/` + `run_tests.bat` | 91 offline tests + `test_acad_integration.py` (opt-in) |
+| `tests/` + `run_tests.bat` | 95 offline tests + `test_acad_integration.py` (opt-in) |
 | `README.md` | Developer/user README for the source version |
 | `CLAUDE.md` | Imports this file |
 | `AutoCAD_Project_Learning_Report.docx` | 31-page learning report written 2026-09-29 (historical snapshot) |
@@ -234,7 +237,8 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | Oct 1 `4dc3c21` | The AutoCAD integration test always cleans up its temp folder. |
 | by Oct 7 | The owner switched the GitHub default branch to `main`. |
 | Oct 7 `df4763b` | This file rewritten as a handoff; README project structure updated. |
-| Oct 7 | **D19: three layers** (outlines / keys / details) + optional detail columns picked in the app. |
+| Oct 7 `a24b2c4` | **D19: three layers** (outlines / keys / details) + optional detail columns picked in the app. |
+| Oct 7 | 5-pass code review (findings B21–B31 in §8); **D20: Floor box** fixes B21. |
 
 ---
 
@@ -260,6 +264,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | D17 | Visible key tag inside each room (shrinks for small rooms) | The owner couldn't see anything new in the drawing | owner 2026-09-29 |
 | D18 | Filter by building before starting AutoCAD | A wrong building ID fails in <1 s | Claude, accepted |
 | D19 | **Three layers**: outline copies (`ROOM_OUTLINES`), key tags (`ROOM_KEYS`), optional details (`ROOM_DETAILS`) with values of user-ticked spreadsheet columns, one TEXT each, stacked under the key; all 3 names editable; Tk window left as is | Owner: separate outlines from tags; generic place for room name etc. Separate TEXTs (not MTEXT) because ArcGIS reads TEXT more reliably | owner 2026-10-07 |
+| D20 | **Floor box** in step 1 (drop-down of the building's floors, editable, required in the Qt app); `RunRequest.floor_id` filters the sheet to building + floor; repeated room numbers within the used rows are logged | Room numbers repeat across floors (B21); owner chose a Floor box over inferring the floor | owner 2026-10-07 |
 
 ---
 
@@ -292,6 +297,17 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | **B10** | open 🟡 | Excel numeric building codes lose leading zeros (`132` vs `0132`) → rows filtered out. `expectedFailure` test exists. Fix idea: zero-pad numeric building values to `BUILDING_ID_LENGTH`, or warn. |
 | **B11** | open 🟡 | Room-ID heuristic: false positives (`1ST FLOOR`, `LEVEL 2`, `STAIR 3`, `2024`), false negatives (`LOBBY`). Harmless unless a false positive matches a sheet ID. Fix idea: label-layer filter (real labels are on `A-AREA-IDEN`) or match against spreadsheet IDs. `expectedFailure` test exists. |
 | **B14** | open 🟡 | Nearest fallback uses centroid distance in raw drawing units; concave rooms' centroids can be outside. |
+| B21 | ✅ 2026-10-07 (D20) | Matching ignored the floor: a room number on several floors took the first row's floor/details (wrong keys on upper-floor drawings, rows hidden from "not in drawing"). 0036 floor 1: "not in drawing" 15 → 2 after the fix. Tk window still has this bug. |
+| B22 | open 🟡 | A room number labelled twice in one drawing: the second label is silently ignored (`match_rooms` dedup), not reported. |
+| B23 | open 🟡 | Re-running on an output drawing skips every room that has a key, so details / layer names cannot be added or changed later — start from the original drawing. Not explained in the app. |
+| B24 | open 🟢 | Outline copies and point-in-polygon use vertices only: arc segments (bulges) become straight. 0036 has no arcs. |
+| B25 | open 🟡 | A polygon shared by 2+ labels is copied once per label (duplicate outlines on the outlines layer); flagged "needs check" but still written. |
+| B26 | open 🟢 | Only model space is scanned: labels/outlines inside blocks, xrefs or paper space are not found. |
+| B27 | open 🟢 | Label position = TEXT insert point (wrong for centred/right-aligned TEXT); rotated labels get horizontal tags. 0036 has no rotated labels. |
+| B28 | open 🟡 | No overall timeout: an AutoCAD dialog not covered by FILEDIA/CMDDIA/PROXYNOTICE (missing fonts/xrefs) blocks the run; Cancel waits for the COM call. |
+| B29 | open 🟡 | Whole drawing goes DWG→DXF→ezdxf→DXF→DWG; only hatch/MTEXT counts and XData verified. Dynamic blocks, AEC/proxy objects, annotative scales not checked. |
+| B30 | open 🟢 | Output layer names are not checked against layers already in the drawing (e.g. typing `A-AREA-PLINE` mixes with originals). |
+| B31 | open 🟢 | `dwg_converter._call` retries any AttributeError for 60 s, so a real coding error looks like a hang. |
 | B20 | note | Intermittent real-AutoCAD test failure seen once (end-of-test check of open drawings/settings) — likely the owner using AutoCAD during the test; not reproduced in 3 reruns. |
 
 ---
@@ -377,3 +393,5 @@ Unsigned exe → Windows SmartScreen "More info → Run anyway" (documented in t
 13. Confirmed current behaviour: one layer + a tag per room. Then: this file updated for the handoff (2026-10-07).
 14. "Most urgent first" → docs committed (`df4763b`); the v2.1 rebuild was stopped by the owner for a design change:
     **D19** — outlines, key tags and details on separate layers; details = spreadsheet columns ticked in the app.
+15. Committed D19 (`a24b2c4`). 5-pass review → B21–B31 + loose ends (Tk window drift, self-test doesn't cover
+    layers/details, unused fields, README "AutoCAD-Annotator" name). Owner chose the **Floor box** (D20) for B21.

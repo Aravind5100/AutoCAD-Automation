@@ -19,7 +19,11 @@ try:
 except ImportError:          # PySide6 not installed (stable Tkinter setup)
     HAS_QT = False
 
-from tests.helpers import EXPECTED_KEYS, ROOMS_CSV, TempDirTestCase, make_plan
+from tests.helpers import ROOMS_CSV, TempDirTestCase, make_plan
+
+# Building 0132 on one floor only, so the Floor box fills itself in
+QT_ROOMS_CSV = ROOMS_CSV.replace("0132,1,103", "0132,01,103")
+QT_KEYS = {"0132-01-101", "0132-01-102", "0132-01-103"}
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 not installed")
@@ -48,7 +52,7 @@ class QtTestCase(TempDirTestCase):
         super().tearDown()
 
     def ready_window(self):
-        self.win.load_sheet(self.write_text("rooms.csv", ROOMS_CSV), wait=True)
+        self.win.load_sheet(self.write_text("rooms.csv", QT_ROOMS_CSV), wait=True)
         self.win.set_drawing(make_plan(self.path("0132_TEST.dxf")))
 
 
@@ -59,6 +63,7 @@ class TestSetup(QtTestCase):
         self.ready_window()
         self.assertEqual(self.win.columns(), ("Room Number", "Building ID", "Floor"))
         self.assertEqual(self.win.building_edit.text(), "0132")
+        self.assertEqual(self.win.floor_id(), "01")               # the building's only floor
         self.assertEqual(self.win.preview.text(), "e.g.  0132-01-101")
         self.assertTrue(self.win.run_btn.isEnabled())
         self.assertFalse(self.win.cancel_btn.isEnabled())
@@ -69,6 +74,23 @@ class TestSetup(QtTestCase):
         self.assertEqual(self.win.preview.text(), "e.g.  9999-01-101")
         self.win.building_edit.setText("")
         self.assertFalse(self.win.run_btn.isEnabled())
+
+    def test_floor_must_be_chosen_when_building_has_several(self):
+        self.win.load_sheet(self.write_text("rooms.csv", ROOMS_CSV + "0132,2,201,Lab\n"), wait=True)
+        self.win.set_drawing(make_plan(self.path("0132_TEST.dxf")))
+        combo = self.win.floor_id_combo
+        self.assertEqual([combo.itemText(i) for i in range(combo.count())], ["01", "1", "2"])
+        self.assertEqual(self.win.floor_id(), "")
+        self.assertFalse(self.win.run_btn.isEnabled())
+        self.assertIn("Floor", self.win.run_btn.toolTip())
+        combo.setCurrentText("1")
+        self.assertTrue(self.win.run_btn.isEnabled())
+        self.assertEqual(self.win.preview.text(), "e.g.  0132-1-103")
+        self.win.start_run(self.path("out.dxf"), wait=True)
+        self.assertEqual([r.key for r in self.win.result.rows if r.status == "created"],
+                         ["0132-1-103"])                           # only floor 1 rows used
+        self.win.building_edit.setText("9999")                    # one floor: picked for you
+        self.assertEqual(self.win.floor_id(), "01")
 
     def test_same_column_twice_blocks_run(self):
         self.ready_window()
@@ -138,7 +160,7 @@ class TestRun(QtTestCase):
         self.assertEqual(self.win.result.created, 3)
         table = self.win.table
         layers = {table.item(r, 1).text() for r in range(table.rowCount())}
-        self.assertTrue(set(EXPECTED_KEYS) <= layers)
+        self.assertTrue(QT_KEYS <= layers)
         self.boxes["information"].assert_called_once()
         self.win.filter_combo.setCurrentText("Not matched")
         visible = [r for r in range(table.rowCount()) if not table.isRowHidden(r)]

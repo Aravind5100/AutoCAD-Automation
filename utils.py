@@ -70,15 +70,17 @@ def detect_building_column(columns: list[str]) -> str | None:
     return None
 
 
+def filter_dataframe_by_value(df, col: str, value: str):
+    """Return rows of *df* where *col* equals *value* (case-insensitive, stripped)."""
+    mask = df[col].astype(str).str.strip().str.upper() == str(value).strip().upper()
+    return df.loc[mask].reset_index(drop=True)
+
+
 def filter_dataframe_by_building(df, building_col: str, building_id: str):
     """Return rows of *df* where *building_col* matches *building_id*
     (case-insensitive, stripped).
     """
-    mask = (
-        df[building_col].astype(str).str.strip().str.upper()
-        == building_id.upper()
-    )
-    return df.loc[mask].reset_index(drop=True)
+    return filter_dataframe_by_value(df, building_col, building_id)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +93,13 @@ _FLOOR_COL_CANDIDATES: set[str] = {
     "flr", "flr code", "flr id", "flrcode", "flrid",
     "level", "level code", "level id",
 }
+
+
+def floors_of_building(df, building_col: str, floor_col: str, building_id: str) -> list[str]:
+    """Distinct non-empty floor values of one building, numbers first (1, 2, 10, B1, ...)."""
+    rows = filter_dataframe_by_building(df, building_col, building_id)
+    floors = {str(v).strip() for v in rows[floor_col] if str(v).strip()}
+    return sorted(floors, key=lambda f: (not f.isdigit(), int(f) if f.isdigit() else 0, f.upper()))
 
 
 def detect_floor_column(columns: list[str]) -> str | None:

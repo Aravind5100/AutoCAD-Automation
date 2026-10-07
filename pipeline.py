@@ -4,7 +4,7 @@ pipeline.py
 The room-layer pipeline as one UI-independent function, so any front end
 (Tkinter, Qt, tests) can run it and show its progress.
 
-    request  →  filter spreadsheet by building  →  DWG→DXF (AutoCAD, DWG only)
+    request  →  filter spreadsheet by building (+ floor)  →  DWG→DXF (AutoCAD, DWG only)
              →  scan  →  label↔polygon  →  label↔spreadsheet  →  room layers
              →  save DXF / DXF→DWG (AutoCAD)  →  RunResult (+ one row per room)
 
@@ -24,7 +24,7 @@ import pandas as pd
 from annotation_writer import CREATED, SKIPPED, OutputLayers, RoomOutcome, write_room_layers
 from autocad_scanner import scan_drawing
 from polygon_matcher import associate_texts_with_polygons, match_rooms
-from utils import filter_dataframe_by_building
+from utils import filter_dataframe_by_building, filter_dataframe_by_value, normalize_room_id
 
 # Status of rows that never reached the writer
 NOT_IN_SHEET = "not in spreadsheet"
@@ -50,6 +50,7 @@ class RunRequest:
     building_col: str
     floor_col: str
     building_id: str                # e.g. "0036"; the user may have corrected it
+    floor_id: str = ""              # the floor this drawing shows, e.g. "1"; "" = all floors
     layers: OutputLayers = field(default_factory=OutputLayers)   # outlines / keys / details
     detail_cols: list[str] = field(default_factory=list)          # written on the details layer
 
@@ -106,6 +107,21 @@ def run(
         raise RunStopped(f"No spreadsheet rows have {req.building_col} = {req.building_id}.\n"
                          "Check the Building ID.")
     log(f"  {len(sheet)} rows for building {req.building_id} (of {len(req.df)})", SUCCESS)
+    if req.floor_id:
+        sheet = filter_dataframe_by_value(sheet, req.floor_col, req.floor_id)
+        if sheet.empty:
+            raise RunStopped(f"Building {req.building_id} has no spreadsheet rows with "
+                             f"{req.floor_col} = {req.floor_id}.\nCheck the Floor.")
+        log(f"  {len(sheet)} rows on floor {req.floor_id}", SUCCESS)
+    result.sheet_rows = len(sheet)
+    # The same room number twice in these rows: only the first row is used
+    ids = sheet[req.room_col].map(normalize_room_id)
+    repeated = sorted(set(sheet.loc[ids.duplicated() & (ids != ""), req.room_col]))
+    if repeated:
+        where = f"floor {req.floor_id}" if req.floor_id else "this building (choose a floor)"
+        log(f"  WARNING: {len(repeated)} room numbers appear more than once on {where}; "
+            f"the first row is used for: {', '.join(repeated[:10])}"
+            + (f" (+{len(repeated) - 10} more)" if len(repeated) > 10 else ""), WARN)
 
     is_dwg = req.drawing_path.lower().endswith(".dwg")
     work_dir = make_work_dir() if is_dwg else None

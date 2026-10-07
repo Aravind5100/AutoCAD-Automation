@@ -99,6 +99,14 @@ class TestRoomKey(unittest.TestCase):
         for parts in (("", "01", "101"), ("0132", " ", "101"), ("0132", "01", None)):
             self.assertIsNone(build_room_key(*parts), parts)
 
+    def test_floors_of_building(self):
+        import pandas as pd
+        from utils import floors_of_building
+        df = pd.DataFrame({"B": ["0132"] * 6 + ["9999"],
+                           "F": ["10", "2", "B1", "2", "M", "", "7"]})
+        self.assertEqual(floors_of_building(df, "B", "F", "0132"), ["2", "10", "B1", "M"])
+        self.assertEqual(floors_of_building(df, "B", "F", "5555"), [])
+
     def test_layer_name_problem(self):
         self.assertIsNone(layer_name_problem("ROOM_KEYS"))
         self.assertIsNone(layer_name_problem("0036-ROOMS"))

@@ -49,6 +49,24 @@ class TestPipelineRun(TempDirTestCase):
         self.assertEqual(tool_layers(out), {"0132-ROOMS", "0132-KEYS", "0132-INFO"})
         self.assertEqual(detail_labels(out)["102"][0].dxf.text, "Admin")
 
+    def test_floor_filter(self):
+        res = pipeline.run(self.request(floor_id="01"))
+        self.assertEqual((res.created, res.sheet_rows), (2, 3))  # 101, 102 (+104 not in drawing)
+        rows = {r.room: r for r in res.rows}
+        self.assertEqual(rows["103"].status, pipeline.NOT_IN_SHEET)   # 103 is on floor "1"
+        with self.assertRaises(pipeline.RunStopped):
+            pipeline.run(self.request(floor_id="7"))
+
+    def test_same_room_on_two_floors_uses_the_chosen_floor(self):
+        df = load_spreadsheet(self.write_text("two.csv", "Building ID,Floor,Room Number\n"
+                                                         "0132,01,101\n0132,02,101\n"))
+        logs = []
+        res = pipeline.run(self.request(df=df), log=lambda m, lvl: logs.append((lvl, m)))
+        self.assertTrue(any(lvl == pipeline.WARN and "101" in m and "choose a floor" in m
+                            for lvl, m in logs), logs)                # ambiguous without a floor
+        res = pipeline.run(self.request(df=df, floor_id="02"))
+        self.assertEqual([r.key for r in res.rows if r.status == "created"], ["0132-02-101"])
+
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):
             pipeline.run(self.request(building_id="9876"))

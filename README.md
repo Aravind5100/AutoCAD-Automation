@@ -153,6 +153,10 @@ Open AutoCAD first, then press any key in the terminal to continue.
 - **Drawing (DWG / DXF) → Browse…** — the floor plan.
 - **Building ID** — filled in from the first 4 characters of the drawing's file name
   (`0132_SATELLITE DISH LAB ANNEX_01.dwg` → `0132`). **Edit it** if the file name is different.
+- **Floor** — the floor this drawing shows. The drop-down lists the floors the spreadsheet has
+  for that building; if there is only one it is chosen for you, otherwise **choose it** (Write
+  Room Keys stays disabled until you do). Only that floor's rows are used, so a room number
+  that exists on several floors (e.g. `STAIR1`) gets the right floor in its key and details.
 
 ### 2. Columns
 
@@ -184,7 +188,8 @@ missing). Click it and choose **where to save** the result (suggested name
 cannot be chosen).
 
 The progress bar and status line follow each step:
-1. Filter the spreadsheet to the Building ID (a wrong ID stops here, before AutoCAD is used)
+1. Filter the spreadsheet to the Building ID and Floor (a wrong ID or floor stops here, before
+   AutoCAD is used)
 2. Convert DWG to DXF (AutoCAD, on a temporary copy)
 3. Scan the drawing for room labels and room outlines
 4. Link each label to its room outline
