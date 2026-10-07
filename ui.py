@@ -622,7 +622,7 @@ class AppUI:
                 floor_col,
                 room_id_col,
                 building_id,
-                scan.existing_annotation_room_ids,
+                scan.previous_output,
                 log_fn=self._log,
             )
 

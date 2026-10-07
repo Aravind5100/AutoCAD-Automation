@@ -13,8 +13,9 @@ Every matched room gets, each on its own layer (names editable in the app):
   c. details layer (default ``ROOM_DETAILS``, only when the user picked detail
      columns) -- one text label per picked column (e.g. Room Name), stacked
      under the key label.
-All carry XData linking them to the source polygon and room label (also used
-to skip rooms that already have a key on a re-run).
+All carry XData linking them to the source polygon and room label. On a
+re-run that XData finds the earlier output, which is removed first, so every
+room is written again with the current settings (layers, details).
 
 In ArcGIS the outlines layer gives the room polygons and the keys layer the
 key annotations; a spatial join puts each key on the polygon that contains it.
@@ -38,7 +39,15 @@ from config import (
     ROOM_OUTLINE_LAYER_DEFAULT,
     ROOM_TAG_GAP_FACTOR,
 )
-from metadata_utils import DETAIL, KEY, OUTLINE, AnnotationMetadata, register_xdata_app, write_xdata
+from metadata_utils import (
+    DETAIL,
+    KEY,
+    OUTLINE,
+    AnnotationMetadata,
+    read_xdata,
+    register_xdata_app,
+    write_xdata,
+)
 from utils import build_room_key, normalize_room_id, point_in_polygon, polygon_centroid
 
 _LIST_LIMIT = 10    # max room IDs listed per warning in the log
@@ -87,7 +96,7 @@ def write_room_layers(
     floor_col: str,
     room_col: str,
     building_id: str,
-    existing_annotation_ids: set[str],
+    previous_output: list,
     log_fn: Callable[[str], None] | None = None,
     outcomes: list | None = None,
     layers: OutputLayers | None = None,
@@ -109,8 +118,9 @@ def write_room_layers(
         Spreadsheet columns that make up the room key.
     building_id : str
         Building identifier (from the filename) for metadata.
-    existing_annotation_ids : set[str]
-        Normalised room IDs that already have a key in the drawing (for dedup).
+    previous_output : list
+        Entities an earlier run wrote (``ScanResult.previous_output``). They
+        are deleted first; layers they leave empty are removed.
     log_fn : callable, optional
     outcomes : list, optional
         If given, one :class:`RoomOutcome` per matched room is appended.
@@ -138,6 +148,7 @@ def write_room_layers(
     msp = doc.modelspace()
     register_xdata_app(doc)
     layers = layers or OutputLayers()
+    earlier_rooms, earlier_layers = _remove_previous_output(msp, previous_output, log_fn)
     detail_cols = list(detail_cols)
     _ensure_layer(doc, layers.outlines, ROOM_OUTLINE_LAYER_COLOR)
     _ensure_layer(doc, layers.keys, ROOM_KEY_LAYER_COLOR)
@@ -146,7 +157,6 @@ def write_room_layers(
     labels = {rt.handle: rt for rt in room_texts}
 
     created = 0
-    already_done: list[str] = []
     no_polygon: list[str] = []
     missing_key: list[str] = []
     nearest: list[str] = []
@@ -163,12 +173,6 @@ def write_room_layers(
 
         row = match.row_data
         key = build_room_key(row.get(building_col), row.get(floor_col), row.get(room_col))
-
-        if normalize_room_id(match.room_id) in existing_annotation_ids:
-            already_done.append(match.room_id)
-            outcome(match.room_id, key=key or "", status=SKIPPED,
-                    note="already has a room key in the drawing")
-            continue
 
         if len(match.polygon_vertices) < 3:
             no_polygon.append(match.room_id)
@@ -213,6 +217,8 @@ def write_room_layers(
         created += 1
         rooms_by_polygon.setdefault(match.polygon_handle, []).append(match.room_id)
         notes = []
+        if normalize_room_id(match.room_id) in earlier_rooms:
+            notes.append("replaces the key from an earlier run")
         if match.match_method == "nearest":
             nearest.append(match.room_id)
             notes.append("label is outside any polygon; linked to the nearest one")
@@ -220,12 +226,14 @@ def write_room_layers(
             notes.append("key label does not fit inside the room" if len(texts) == 1
                          else "key / detail labels do not fit inside the room")
         outcome(match.room_id, key=key, note="; ".join(notes),
-                needs_check=bool(notes))
+                needs_check=len(notes) > (normalize_room_id(match.room_id) in earlier_rooms))
 
     _log(log_fn, f"  Rooms written: {created} -- outline copies on {layers.outlines}, "
                  f"key labels on {layers.keys}"
                  + (f", {', '.join(detail_cols)} on {layers.details}" if detail_cols else ""))
-    _log_list(log_fn, already_done, "rooms skipped -- already have a room key", warn=False)
+    written = {normalize_room_id(r) for r, o in results.items() if o.status == CREATED}
+    _log_list(log_fn, sorted(earlier_rooms - written),
+              "rooms had keys from an earlier run that were removed and not written again")
     _log_list(log_fn, no_polygon, "rooms skipped -- no room boundary polygon found")
     _log_list(log_fn, missing_key,
               f"rooms skipped -- empty '{building_col}', '{floor_col}' or '{room_col}' value")
@@ -241,6 +249,8 @@ def write_room_layers(
             o.note = "; ".join(filter(None, [o.note, f"polygon shared with {', '.join(r for r in rooms if r != room_id)}"]))
             o.needs_check = True
 
+    _remove_unused_layers(doc, earlier_layers - {layers.outlines, layers.keys, layers.details},
+                          log_fn)
     if outcomes is not None:
         outcomes.extend(results.values())
     return doc, created
@@ -327,6 +337,40 @@ def _add_labels(msp, label, key: str, details: list[str],
 
 def _text(msp, text: str, height: float, insert: tuple[float, float], layer: str):
     return msp.add_text(text, height=height, dxfattribs={"layer": layer, "insert": insert})
+
+
+def _remove_previous_output(msp, entities: list, log_fn) -> tuple[set[str], set[str]]:
+    """Delete an earlier run's entities; return (their room IDs, their layers)."""
+    rooms, layers = set(), set()
+    for entity in entities:
+        if not entity.is_alive:
+            continue
+        meta = read_xdata(entity)
+        if meta is not None:
+            rooms.add(normalize_room_id(meta.room_id))
+        layers.add(entity.dxf.layer)
+        msp.delete_entity(entity)
+    rooms.discard("")
+    if entities:
+        _log(log_fn, f"  Removed {len(entities)} entities written by an earlier run "
+                     f"({len(rooms)} rooms); writing them again with the current settings")
+    return rooms, layers
+
+
+def _remove_unused_layers(doc, names: set[str], log_fn) -> None:
+    """Remove layers in *names* that nothing uses any more (e.g. renamed output layers)."""
+    current = str(doc.header.get("$CLAYER", "0")).upper()
+    for name in sorted(names):
+        if name.upper() in ("0", "DEFPOINTS", current) or name not in doc.layers:
+            continue
+        in_use = any(e.is_alive and e.dxf.hasattr("layer") and e.dxf.layer.upper() == name.upper()
+                     for e in doc.entitydb.values())
+        if not in_use:
+            try:
+                doc.layers.remove(name)
+                _log(log_fn, f"  Removed layer {name} (it only held the earlier run's output)")
+            except Exception:
+                pass
 
 
 def _ensure_layer(doc, layer_name: str, color: int) -> None:

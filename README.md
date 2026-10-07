@@ -318,8 +318,14 @@ The original DWG is **never modified**, and nothing is written next to it:
 - AutoCAD's dialog settings (FILEDIA, CMDDIA, PROXYNOTICE) are switched off only
   while converting and **restored** afterwards.
 
-**Running again is safe:** rooms that already have a key in the drawing
-are skipped (the log reports how many).
+**Running again is safe:** if the drawing you pick is itself an output of the tool, everything
+the earlier run wrote (outline copies, keys, details) is removed and written again with the
+current settings — so you can add detail columns or rename the layers later, without
+duplicates. Layers left empty by that are removed. Hand edits to the tool's own entities
+(e.g. a moved key label) are lost on a re-run.
+
+A room number labelled **more than once** in the drawing uses the first label; the extra label
+is listed in Results as *Skipped* and the room is marked *⚠ Check*.
 
 ---
 

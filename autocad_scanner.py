@@ -5,7 +5,8 @@ Uses **ezdxf** to scan a DXF file and collect:
 
   1. Room identifier TEXT / MTEXT entities
   2. Closed polyline (room polygon) candidates
-  3. Room-layer polygon copies written by a previous run (for dedup)
+  3. Entities written by an earlier run of the tool (found by their XData),
+     so the writer can replace them
 
 The DXF file is produced from the original DWG by ``dwg_converter.py``.
 All entity properties are cached into plain Python dataclasses.
@@ -84,6 +85,8 @@ class ScanResult:
     polygons: list[RoomPolygon] = field(default_factory=list)
     total_entities: int = 0
     existing_annotation_room_ids: set[str] = field(default_factory=set)
+    # Outline copies / key and detail labels from an earlier run (live entities of *doc*)
+    previous_output: list = field(default_factory=list, repr=False, compare=False)
     unreadable_entities: int = 0    # TEXT/MTEXT/polylines that raised while reading
     # The parsed drawing, so the writer can reuse it instead of reading the file again
     doc: object = field(default=None, repr=False, compare=False)
@@ -110,7 +113,8 @@ def scan_drawing(
     -------
     ScanResult
         Contains room_texts, polygons, total_entities, and
-        existing_annotation_room_ids (for dedup).
+        existing_annotation_room_ids and previous_output (output of an
+        earlier run, replaced by the writer).
     """
     abs_path = os.path.abspath(dxf_path)
     if not os.path.exists(abs_path):
@@ -147,8 +151,9 @@ def scan_drawing(
     _log(log_fn, f"    ...scan complete ({total} entities)")
     _log(log_fn, f"  Room identifiers found : {len(result.room_texts)}")
     _log(log_fn, f"  Polygon candidates     : {len(result.polygons)}")
-    if result.existing_annotation_room_ids:
-        _log(log_fn, f"  Existing annotations   : {len(result.existing_annotation_room_ids)}")
+    if result.previous_output:
+        _log(log_fn, f"  Earlier run's output   : {len(result.previous_output)} entities "
+                     f"({len(result.existing_annotation_room_ids)} rooms) -- will be replaced")
     if result.unreadable_entities:
         _log(log_fn, f"  WARNING: {result.unreadable_entities} text/polyline entities "
                      "could not be read and were skipped")
@@ -162,8 +167,8 @@ def scan_drawing(
 
 def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
     """Extract properties from a TEXT/MTEXT entity and add to result."""
-    # Our own key labels from a previous run are not room labels
-    if read_xdata(entity) is not None:
+    # Our own key / detail labels from an earlier run are not room labels
+    if _record_existing_annotation(entity, result):
         return
 
     try:
@@ -262,8 +267,8 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
     # Outlines from the old block-based versions are not room boundaries
     if layer in LEGACY_OUTLINE_LAYERS:
         return
-    # A polygon carrying our XData is a room-layer copy from a previous run:
-    # record its room (so it is not written twice) instead of scanning it
+    # A polygon carrying our XData is an outline copy from an earlier run:
+    # record it (the writer replaces it) instead of scanning it as a room
     if _record_existing_annotation(entity, result):
         return
 
@@ -303,10 +308,11 @@ def _process_polygon_entity(entity, etype: str, result: ScanResult) -> None:
 
 
 def _record_existing_annotation(entity, result: ScanResult) -> bool:
-    """If *entity* carries our XData, record its room_id and return True."""
+    """If *entity* carries our XData, record it and its room_id and return True."""
     meta = read_xdata(entity)
     if meta is None:
         return False
+    result.previous_output.append(entity)
     room_id = normalize_room_id(meta.room_id)
     if room_id:
         result.existing_annotation_room_ids.add(room_id)

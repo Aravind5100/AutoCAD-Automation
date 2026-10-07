@@ -67,6 +67,22 @@ class TestPipelineRun(TempDirTestCase):
         res = pipeline.run(self.request(df=df, floor_id="02"))
         self.assertEqual([r.key for r in res.rows if r.status == "created"], ["0132-02-101"])
 
+    def test_room_labelled_twice_gives_a_result_row(self):
+        import ezdxf
+        doc = ezdxf.readfile(self.plan)
+        label = next(t for t in doc.modelspace().query("TEXT MTEXT") if "101" in t.plain_text())
+        doc.modelspace().add_text("101", dxfattribs={"insert": label.dxf.insert, "height": 5})
+        doc.saveas(self.plan)
+        logs = []
+        res = pipeline.run(self.request(), log=lambda m, lvl: logs.append((lvl, m)))
+        rows = [r for r in res.rows if r.room == "101"]
+        self.assertEqual(sorted(r.status for r in rows), ["created", "skipped"])
+        created = next(r for r in rows if r.status == "created")
+        self.assertTrue(created.needs_check)
+        self.assertIn("labelled more than once", created.note)
+        self.assertTrue(any(lvl == pipeline.WARN and "labelled more than once" in m
+                            for lvl, m in logs), logs)
+
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):
             pipeline.run(self.request(building_id="9876"))

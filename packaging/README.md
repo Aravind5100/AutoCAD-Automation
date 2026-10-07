@@ -59,6 +59,9 @@ To remove it, delete the folder.
 | ○ Not in spreadsheet | A room number in the drawing has no spreadsheet row, e.g. `ELECT1` vs `ELEC1` |
 | ○ Not in drawing | A spreadsheet row has no room number in this drawing (often another floor) |
 
+Running the tool on a drawing it already processed replaces the earlier output (handy for
+adding Room details or renaming layers later); nothing is duplicated.
+
 The **Log** tab shows every step. The ☾/☀ button (top right) switches between light and dark.
 
 ## In ArcGIS

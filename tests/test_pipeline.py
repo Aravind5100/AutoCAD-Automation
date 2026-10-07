@@ -130,13 +130,16 @@ class TestRoomKeys(TempDirTestCase):
         self.assertEqual(len(msp.query("HATCH")), 1)
         self.assertEqual(len(msp.query("MTEXT")), 2)
 
-    def test_rerun_adds_no_duplicates(self):
-        self._run_and_save(self.plan, "run1.dxf")
-        scan2, _, created2, out2 = self._run_and_save(self.path("run1.dxf"), "run2.dxf")
+    def test_rerun_replaces_earlier_output_without_duplicates(self):
+        self._run_and_save(self.plan, "0132_run1.dxf")    # building ID comes from the file name
+        scan2, _, created2, out2 = self._run_and_save(self.path("0132_run1.dxf"), "run2.dxf")
         self.assertEqual(scan2.existing_annotation_room_ids, {"101", "102", "103"})
+        self.assertEqual(len(scan2.previous_output), 6)   # 3 outline copies + 3 key labels
         self.assertEqual(len(scan2.polygons), 4)          # copies not rescanned as rooms
         self.assertEqual(len(scan2.room_texts), 3)        # key labels not rescanned as rooms
-        self.assertEqual(created2, 0)
+        self.assertEqual(created2, 3)                     # written again, not skipped
+        self.assertEqual({k: len(v) for k, v in room_key_labels(out2).items()},
+                         {k: 1 for k in EXPECTED_KEYS})
         self.assertEqual({k: len(v) for k, v in room_key_polygons(out2).items()},
                          {k: 1 for k in EXPECTED_KEYS})
 
@@ -180,7 +183,7 @@ class TestRoomKeys(TempDirTestCase):
         self.assertEqual({p[0].dxftype() for p in layers.values()}, {"POLYLINE"})
 
     def test_detail_columns_on_details_layer_under_the_key(self):
-        scan, _, created, out = self._run_and_save(self.plan, "out.dxf",
+        scan, _, created, out = self._run_and_save(self.plan, "0132_out.dxf",
                                                    detail_cols=["Department", "Floor"])
         self.assertEqual(created, 3)
         self.assertEqual(tool_layers(out), {"ROOM_OUTLINES", "ROOM_KEYS", "ROOM_DETAILS"})
@@ -195,11 +198,67 @@ class TestRoomKeys(TempDirTestCase):
             key = keys[room]
             self.assertLess(texts[0].dxf.insert.y, key.dxf.insert.y)     # under the key
             self.assertAlmostEqual(texts[0].dxf.insert.x, key.dxf.insert.x)
-        # detail labels are not mistaken for room labels on a re-run
-        scan2, _, created2, out2 = self._run_and_save(self.path("out.dxf"), "out2.dxf",
+        # re-run with other details: detail labels are not mistaken for room labels,
+        # and the earlier details are replaced
+        scan2, _, created2, out2 = self._run_and_save(self.path("0132_out.dxf"), "out2.dxf",
                                                       detail_cols=["Department"])
-        self.assertEqual((len(scan2.room_texts), created2), (3, 0))
-        self.assertEqual(sum(len(t) for t in detail_labels(out2).values()), 6)
+        self.assertEqual((len(scan2.room_texts), created2), (3, 3))
+        self.assertEqual({r: [t.dxf.text for t in ts] for r, ts in detail_labels(out2).items()},
+                         {"101": ["Eng"], "102": ["Admin"], "103": ["Lab"]})
+
+    def test_rerun_can_add_details_and_rename_layers(self):
+        self._run_and_save(self.plan, "run1.dxf")                       # no details
+        from polygon_matcher import associate_texts_with_polygons, match_rooms
+        from spreadsheet_loader import load_spreadsheet
+        cols = ["Building ID", "Floor", "Room Number"]
+        scan = scan_drawing(self.path("run1.dxf"))
+        assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons)
+        summary = match_rooms(scan.room_texts, assoc, load_spreadsheet(self.sheet),
+                              "Room Number", cols + ["Department"])
+        outcomes, logs = [], []
+        layers = OutputLayers(outlines="A-ROOMS", keys="A-KEYS", details="A-INFO")
+        doc, created = write_room_layers(scan.doc, summary.results, scan.room_texts, *cols,
+                                         "0132", scan.previous_output, log_fn=logs.append,
+                                         outcomes=outcomes, layers=layers,
+                                         detail_cols=["Department"])
+        self.assertEqual(created, 3)
+        self.assertEqual(tool_layers(doc), {"A-ROOMS", "A-KEYS", "A-INFO"})
+        for old in ("ROOM_OUTLINES", "ROOM_KEYS"):                   # emptied -> removed
+            self.assertNotIn(old, doc.layers)
+        self.assertEqual(sum(len(t) for t in detail_labels(doc).values()), 3)
+        self.assertTrue(all("earlier run" in o.note and not o.needs_check for o in outcomes))
+        self.assertTrue(any("Removed 6 entities" in m for m in logs), logs)
+
+    def test_rerun_keeps_layers_still_in_use(self):
+        doc = ezdxf.readfile(make_plan(self.path("0132_L.dxf")))
+        doc.saveas(self.path("0132_L.dxf"))
+        self._run_and_save(self.path("0132_L.dxf"), "run1.dxf")
+        run1 = ezdxf.readfile(self.path("run1.dxf"))
+        run1.modelspace().add_line((0, 0), (1, 1), dxfattribs={"layer": "ROOM_KEYS"})  # user's own
+        run1.saveas(self.path("run1.dxf"))
+        from polygon_matcher import associate_texts_with_polygons, match_rooms
+        from spreadsheet_loader import load_spreadsheet
+        cols = ["Building ID", "Floor", "Room Number"]
+        scan = scan_drawing(self.path("run1.dxf"))
+        summary = match_rooms(scan.room_texts,
+                              associate_texts_with_polygons(scan.room_texts, scan.polygons),
+                              load_spreadsheet(self.sheet), "Room Number", cols)
+        doc, _ = write_room_layers(scan.doc, summary.results, scan.room_texts, *cols, "0132",
+                                   scan.previous_output,
+                                   layers=OutputLayers(outlines="A-ROOMS", keys="A-KEYS"))
+        self.assertIn("ROOM_KEYS", doc.layers)                       # still holds the line
+        self.assertNotIn("ROOM_OUTLINES", doc.layers)
+
+    def test_room_labelled_twice_is_reported(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        msp.add_lwpolyline([(0, 0), (100, 0), (100, 100), (0, 100)], close=True)
+        msp.add_text("101", dxfattribs={"insert": (10, 80), "height": 5})
+        msp.add_text("101", dxfattribs={"insert": (10, 20), "height": 5})   # same room again
+        doc.saveas(self.path("0132_DUP.dxf"))
+        _, summary, created, _ = self._run_and_save(self.path("0132_DUP.dxf"), "o.dxf")
+        self.assertEqual(created, 1)
+        self.assertEqual(summary.repeated_labels, ["101"])
 
     def test_empty_detail_value_left_out(self):
         sheet = self.write_text("s.csv", "Building ID,Floor,Room Number,Room Name\n"
@@ -256,7 +315,7 @@ class TestRoomKeys(TempDirTestCase):
     def test_nothing_to_write_returns_drawing(self):
         scan = scan_drawing(self.plan)
         doc, created = write_room_layers(self.plan, [], [], "B", "F", "R", "0132",
-                                         scan.existing_annotation_room_ids)
+                                         scan.previous_output)
         self.assertIsInstance(doc, ezdxf.document.Drawing)
         self.assertEqual(created, 0)
 

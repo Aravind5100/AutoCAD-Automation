@@ -71,6 +71,7 @@ class MatchSummary:
     matched_count: int = 0
     unmatched_drawing: list[str] = field(default_factory=list)
     unmatched_sheet: list[str] = field(default_factory=list)
+    repeated_labels: list[str] = field(default_factory=list)   # extra labels of a room number
     associations: list[TextPolygonAssociation] = field(default_factory=list)
     results: list[RoomMatch] = field(default_factory=list)
 
@@ -215,6 +216,7 @@ def match_rooms(
     for rt, assoc in zip(room_texts, associations):
         norm = normalize_room_id(rt.text)
         if norm in seen:
+            summary.repeated_labels.append(rt.text)     # only the first label is used
             continue
         seen.add(norm)
 

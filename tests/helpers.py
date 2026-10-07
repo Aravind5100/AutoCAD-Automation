@@ -98,7 +98,7 @@ def run_pipeline(drawing_path: str, sheet_path: str, log=None,
                           [building_col, floor_col, room_col, *detail_cols])
     doc, created = write_room_layers(
         scan.doc, summary.results, scan.room_texts, building_col, floor_col, room_col,
-        "0132", scan.existing_annotation_room_ids, log_fn=log, detail_cols=detail_cols,
+        "0132", scan.previous_output, log_fn=log, detail_cols=detail_cols,
     )
     return scan, summary, doc, created
 

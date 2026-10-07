@@ -155,10 +155,14 @@ def run(
         outcomes: list[RoomOutcome] = []
         doc, result.created = write_room_layers(
             scan.doc, summary.results, scan.room_texts, req.building_col, req.floor_col,
-            req.room_col, req.building_id, scan.existing_annotation_room_ids,
+            req.room_col, req.building_id, scan.previous_output,
             log_fn=plain_log, outcomes=outcomes, layers=req.layers, detail_cols=req.detail_cols,
         )
         result.rows = _result_rows(outcomes, summary)
+        if summary.repeated_labels:
+            log(f"  WARNING: {len(summary.repeated_labels)} room numbers are labelled more than "
+                f"once in the drawing; only the first label is used: "
+                f"{', '.join(sorted(set(summary.repeated_labels))[:10])}", WARN)
 
         if is_dwg:
             checkpoint("Saving as DWG (AutoCAD)...")
@@ -174,7 +178,15 @@ def run(
 
 
 def _result_rows(outcomes: list[RoomOutcome], summary) -> list[ResultRow]:
+    repeated = {normalize_room_id(r) for r in summary.repeated_labels}
+    for o in outcomes:              # the room that was written: point at the extra label
+        if normalize_room_id(o.room_id) in repeated:
+            o.note = "; ".join(filter(None, [o.note, "labelled more than once in the drawing"]))
+            o.needs_check = o.needs_check or o.status == CREATED
     rows = [ResultRow(o.room_id, o.key, o.status, o.note, o.needs_check) for o in outcomes]
+    rows += [ResultRow(r, status=SKIPPED,
+                       note="room number labelled again in the drawing; only the first label is used")
+             for r in summary.repeated_labels]
     rows += [ResultRow(r, status=NOT_IN_SHEET, note="room label in the drawing has no spreadsheet row")
              for r in summary.unmatched_drawing]
     rows += [ResultRow(r, status=NOT_IN_DRAWING, note="spreadsheet row has no room label in the drawing")
