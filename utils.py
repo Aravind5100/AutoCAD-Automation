@@ -12,10 +12,12 @@ import re
 
 from config import (
     BUILDING_ID_LENGTH,
+    LAYER_NAME_FORBIDDEN_CHARS,
     MIN_POLYGON_AREA,
     ROOM_ID_MAX_LENGTH,
     ROOM_ID_MAX_WORDS,
     ROOM_ID_MIN_DIGITS,
+    ROOM_KEY_SEPARATOR,
 )
 
 
@@ -36,20 +38,6 @@ def normalize_col(name: str) -> str:
     name = re.sub(r"\s+", " ", name)
     name = re.sub(r"[^a-z0-9 ]", "", name)
     return name.strip()
-
-
-def find_column(columns: list[str], target: str) -> str | None:
-    """Return the first column whose normalized name matches *target*."""
-    target_norm = normalize_col(target)
-    for col in columns:
-        if normalize_col(col) == target_norm:
-            return col
-    return None
-
-
-def build_col_map(columns: list[str]) -> dict[str, str]:
-    """Build a mapping of normalized_name → original_name for every column."""
-    return {normalize_col(c): c for c in columns}
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +70,44 @@ def detect_building_column(columns: list[str]) -> str | None:
     return None
 
 
+def filter_dataframe_by_value(df, col: str, value: str):
+    """Return rows of *df* where *col* equals *value* (case-insensitive, stripped)."""
+    mask = df[col].astype(str).str.strip().str.upper() == str(value).strip().upper()
+    return df.loc[mask].reset_index(drop=True)
+
+
 def filter_dataframe_by_building(df, building_col: str, building_id: str):
     """Return rows of *df* where *building_col* matches *building_id*
     (case-insensitive, stripped).
     """
-    mask = (
-        df[building_col].astype(str).str.strip().str.upper()
-        == building_id.upper()
-    )
-    return df.loc[mask].reset_index(drop=True)
+    return filter_dataframe_by_value(df, building_col, building_id)
+
+
+# ---------------------------------------------------------------------------
+# Floor code helpers
+# ---------------------------------------------------------------------------
+
+_FLOOR_COL_CANDIDATES: set[str] = {
+    "floor", "floor code", "floor id", "floor no", "floor number", "floor level",
+    "floorcode", "floorid", "floorno", "floornumber",
+    "flr", "flr code", "flr id", "flrcode", "flrid",
+    "level", "level code", "level id",
+}
+
+
+def floors_of_building(df, building_col: str, floor_col: str, building_id: str) -> list[str]:
+    """Distinct non-empty floor values of one building, numbers first (1, 2, 10, B1, ...)."""
+    rows = filter_dataframe_by_building(df, building_col, building_id)
+    floors = {str(v).strip() for v in rows[floor_col] if str(v).strip()}
+    return sorted(floors, key=lambda f: (not f.isdigit(), int(f) if f.isdigit() else 0, f.upper()))
+
+
+def detect_floor_column(columns: list[str]) -> str | None:
+    """Return the original column name that represents a floor code."""
+    for col in columns:
+        if normalize_col(col) in _FLOOR_COL_CANDIDATES:
+            return col
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -228,19 +245,33 @@ def is_valid_room_polygon(
 
 
 # ---------------------------------------------------------------------------
-# Text formatting helpers
+# Room layer key
 # ---------------------------------------------------------------------------
 
-def format_mtext_content(fields: dict[str, str]) -> str:
-    r"""Format {label: value} into an MTEXT string (lines joined by ``\P``)."""
-    lines = []
-    for label, value in fields.items():
-        display_label = label.strip().title()
-        lines.append(f"{display_label}: {value}")
-    return r"\P".join(lines)
+def layer_name_problem(name: str) -> str | None:
+    """Why *name* cannot be used as an AutoCAD layer name, or None if it can."""
+    name = (name or "").strip()
+    if not name:
+        return "Enter a layer name."
+    bad = sorted({c for c in name if c in LAYER_NAME_FORBIDDEN_CHARS})
+    if bad:
+        return f"A layer name cannot contain {' '.join(bad)}"
+    if len(name) > 255:
+        return "A layer name can be at most 255 characters."
+    return None
 
 
-def build_output_path(original_path: str) -> str:
-    """``/path/to/plan.dwg`` → ``/path/to/plan_updated.dwg``"""
-    base, ext = os.path.splitext(original_path)
-    return f"{base}_updated{ext}"
+def build_room_key(building, floor, room) -> str | None:
+    """Build the room key ``<building>-<floor>-<room>``, written as text in the drawing.
+
+    Values are used exactly as in the spreadsheet (only surrounding whitespace
+    is trimmed), so the key matches the facilities data for joins. Returns
+    None when any part is empty, because the key would then be ambiguous.
+
+    Examples: ``("0132", "01", "101")`` → ``0132-01-101``;
+    ``("0132", "1", "LAB/2")`` → ``0132-1-LAB/2``
+    """
+    parts = ["" if v is None else str(v).strip() for v in (building, floor, room)]
+    if not all(parts):
+        return None
+    return ROOM_KEY_SEPARATOR.join(parts)

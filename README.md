@@ -1,234 +1,568 @@
 # AutoCAD Room Annotation Tool
 
-A production-style Python desktop application that reads room data from a
-CSV or Excel spreadsheet, links it to room polygons in AutoCAD, and inserts
-formatted annotations with full polygon linkage — without overwriting the
-original file.
+A Python desktop application that reads room data from a spreadsheet (CSV/Excel),
+scans an AutoCAD DWG drawing for room identifiers and polygons, matches them,
+and writes every matched room onto **three ArcGIS-ready layers**: a copy of the room's outline
+(`ROOM_OUTLINES`), a text label with its key `[Building]-[Floor]-[Room]` (e.g. `0132-01-101`,
+`ROOM_KEYS`) and, optionally, other spreadsheet values such as the room name (`ROOM_DETAILS`)
+— without overwriting the original file.
 
 ---
 
-## Features
+## Table of Contents
 
-- **Polygon linkage** — each annotation is linked to its room polygon via XData
-- **Building validation** — extracts building ID from DWG filename, filters spreadsheet
-- **Single-pass scan** — TEXT/MTEXT + closed polylines collected in one ModelSpace iteration
-- **Text→Polygon association** — ray-casting point-in-polygon with smallest-area selection
-- **Nearest-polygon fallback** — configurable centroid-distance fallback when containment fails
-- **Deduplication** — detects existing annotations via XData to avoid duplicates on re-run
-- Supports **CSV**, **XLS**, and **XLSX** input files
-- Robust **column name normalization** (spaces, hyphens, underscores, mixed case)
-- **Auto-detects** Room Identifier and Building Identifier columns
-- **Case-insensitive, trimmed** matching between spreadsheet and drawing
-- Inserts formatted **MTEXT** on dedicated layer (`ROOM_INFO_AI`) in **green**
-- **Saves a new file** (`originalname_updated.dwg`) — original is never modified
-- Dark-themed **Tkinter GUI** with live log output and progress updates
-
----
-
-## Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| **Windows** | AutoCAD COM automation requires Windows |
-| **AutoCAD** | Any version with COM/ActiveX interface (2010+) |
-| **Python 3.10+** | Uses modern type hint syntax (`X \| Y`) |
+1. [Quick Start (5 Minutes)](#quick-start-5-minutes)
+2. [Requirements](#requirements)
+3. [Detailed Setup Instructions](#detailed-setup-instructions)
+4. [Running the Application](#running-the-application)
+5. [Step-by-Step Usage Guide](#step-by-step-usage-guide)
+6. [How It Works](#how-it-works)
+7. [Input File Requirements](#input-file-requirements)
+8. [Output Files](#output-files)
+9. [ArcGIS Compatibility](#arcgis-compatibility)
+10. [Configuration](#configuration)
+11. [Troubleshooting & Error Handling](#troubleshooting--error-handling)
+12. [Project Structure](#project-structure)
+13. [Assumptions and Limitations](#assumptions-and-limitations)
 
 ---
 
-## Setup
+## Quick Start (5 Minutes)
 
-### 1. Clone or download the project
-
-```bash
-git clone https://github.com/your-username/autocad-room-annotation.git
-cd autocad-room-annotation
+```
+1. Unzip the folder to any location (e.g. C:\Tools\AutoCAD-Annotator\)
+2. Double-click  setup.bat        (one-time setup — installs dependencies)
+3. Open AutoCAD and load your DWG file
+4. Double-click  run.bat           (launches the application)
+5. Select your spreadsheet and DWG file, check the Room / Building / Floor columns, click "Run Annotation"
+6. Choose where to save the result (suggested name: <original_name>_annotated.dwg)
 ```
 
-### 2. Create and activate a virtual environment
+That's it. See below for detailed instructions if anything goes wrong.
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
+---
+
+## Requirements
+
+### Required Software
+
+| Software | Version | Why It's Needed |
+|---|---|---|
+| **Windows** | 10 or 11 | AutoCAD COM automation only works on Windows |
+| **AutoCAD** | 2018 or later | Must be installed, licensed, and **running** before you start |
+| **Python** | 3.10 or later | The application is written in Python |
+
+### How to Check if Python is Installed
+
+Open **Command Prompt** (press `Win+R`, type `cmd`, press Enter) and type:
+
+```
+python --version
 ```
 
-### 3. Install dependencies
+You should see something like `Python 3.12.4`. If you get an error:
 
-```bash
-pip install -r requirements.txt
+1. Download Python from https://www.python.org/downloads/
+2. **IMPORTANT:** During installation, check the box **"Add Python to PATH"**
+3. Restart your computer after installation
+
+### How to Check AutoCAD
+
+- AutoCAD must be **installed and licensed** (not a trial that has expired).
+- AutoCAD must be **open and running** before you start the annotation tool.
+- Any version from AutoCAD 2018 onward should work.
+
+---
+
+## Detailed Setup Instructions
+
+### Step 1: Unzip the Folder
+
+Unzip `AutoCAD_Room_Annotator.zip` to a folder on your computer. For example:
+
+```
+C:\Tools\AutoCAD-Annotator\
 ```
 
-> **Note:** If COM calls fail, run as Administrator:
-> ```bash
-> python -m pywin32_postinstall
-> ```
+You should see these files inside:
+
+```
+AutoCAD-Annotator/
+  setup.bat              <-- Run this first (one time only)
+  run.bat                <-- Run this to start the app
+  main.py
+  config.py
+  ui.py
+  requirements.txt
+  ... (other .py files)
+  README.md              <-- This file
+```
+
+### Step 2: Run setup.bat (One Time Only)
+
+1. **Double-click `setup.bat`**
+2. A terminal window will open and show progress:
+   - `[1/4] Checking Python installation...`
+   - `[2/4] Creating virtual environment...`
+   - `[3/4] Installing dependencies...`
+   - `[4/4] Verifying installation...`
+3. Wait for the message: **"Setup Complete!"**
+4. Press any key to close the window.
+
+**If setup fails**, see the [Troubleshooting](#troubleshooting--error-handling) section below.
+
+> **Note:** You only need to run `setup.bat` once. After that, just use `run.bat`.
+
+### Step 3: Verify Setup Worked
+
+After setup, you should have a new `.venv` folder inside the project directory.
+This contains all the Python dependencies. Do not delete this folder.
 
 ---
 
 ## Running the Application
 
-```bash
-python main.py
+### Every Time You Want to Use It:
+
+1. **Open AutoCAD** (needed for DWG files; DXF files work without it).
+2. **Double-click `run.bat`**
+3. The **Room Layer Tool** window appears (light theme; switch with the ☾ Dark / ☀ Light
+   button, top right — your choice is remembered).
+
+> The previous Tkinter window is still available: `.venv\Scripts\python.exe main.py --tk`
+
+### If run.bat Shows a Warning About AutoCAD
+
+The script checks if AutoCAD is running. If it shows:
+
+```
+WARNING: AutoCAD does not appear to be running.
 ```
 
----
-
-## Workflow
-
-| Step | Action |
-|---|---|
-| **1** | Select spreadsheet (CSV/XLS/XLSX) |
-| **2** | Select AutoCAD DWG — building ID is extracted from first 4 characters |
-| **3** | Choose **Room Identifier Column** and **Building Column** (auto-detected) |
-| **4** | Check columns to insert as annotations |
-| **5** | Click **Run Annotation** |
-| **6** | Pipeline: filter by building → scan drawing → associate texts with polygons → match → insert |
-| **7** | Updated drawing saved as `<name>_updated.dwg` |
+Open AutoCAD first, then press any key in the terminal to continue.
 
 ---
 
-## Building Identifier Validation
+## Step-by-Step Usage Guide
 
-The first 4 characters of the DWG filename are the building identifier.
+### 1. Files
 
-| Filename | Building ID |
+- **Spreadsheet → Browse…** — CSV, XLS or XLSX with a room-number column. Large Excel files
+  take a while the first time (a 36,000-row workbook ≈ 15–25 s); the window stays usable and
+  shows `✓ 36,367 rows` when done. The same unchanged file then loads instantly.
+- **Drawing (DWG / DXF) → Browse…** — the floor plan.
+- **Building ID** — filled in from the first 4 characters of the drawing's file name
+  (`0132_SATELLITE DISH LAB ANNEX_01.dwg` → `0132`). **Edit it** if the file name is different.
+- **Floor** — the floor this drawing shows. The drop-down lists the floors the spreadsheet has
+  for that building; if there is only one it is chosen for you, otherwise **choose it** (Write
+  Room Keys stays disabled until you do). Only that floor's rows are used, so a room number
+  that exists on several floors (e.g. `STAIR1`) gets the right floor in its key and details.
+
+### 2. Columns
+
+The **Room**, **Building** and **Floor** columns are detected automatically (e.g. "Room
+Identifier", "Building Identifier", "Floor Code"); change them in the drop-downs if needed.
+They must be three different columns. The green preview shows a real room key for the
+building you are processing, e.g. `e.g.  0036-1-001`.
+
+Three **layer** boxes name the layers the tool writes (your last choice is remembered):
+
+| Box | Default | Holds |
+|---|---|---|
+| Outlines layer | `ROOM_OUTLINES` | a copy of every matched room's outline |
+| Keys layer | `ROOM_KEYS` | the `Building-Floor-Room` key text inside every room |
+| Details layer | `ROOM_DETAILS` | the values of the columns ticked in **Room details** (only used when some are ticked) |
+
+The names must differ, and cannot contain `< > / \ " : ; ? * | = `` ` ``.
+
+**Room details (optional):** a drop-down listing every spreadsheet column — tick as many as you
+like (e.g. *Room Name*, *Department Name*; the list stays open while you tick) to write their
+values into each room, one text line per column, under the key. Empty values are left out.
+Nothing is ticked by default; the ticked columns are remembered.
+
+### 3. Write Room Keys
+
+**Write Room Keys** is enabled once everything above is set (hover over it to see what is
+missing). Click it and choose **where to save** the result (suggested name
+`<original_name>_annotated.dwg`, starting in your Documents folder — the original drawing
+cannot be chosen).
+
+The progress bar and status line follow each step:
+1. Filter the spreadsheet to the Building ID and Floor (a wrong ID or floor stops here, before
+   AutoCAD is used)
+2. Convert DWG to DXF (AutoCAD, on a temporary copy)
+3. Scan the drawing for room labels and room outlines
+4. Link each label to its room outline
+5. Match rooms to the spreadsheet
+6. Put a copy of each matched room's outline on the outlines layer, its key text (inside the
+   room) on the keys layer, and the ticked detail values (under the key) on the details layer
+7. Convert back to DWG and save it where you chose
+
+**Cancel** stops the run after the current step; nothing is saved.
+
+### 4. Results
+
+The **Results** tab lists every room, with a filter (**Show**) and a summary line:
+
+| Status | Meaning |
 |---|---|
+| ✓ Created | Outline copy and key text written |
+| ⚠ Check | Created, but worth a look — e.g. the key label does not fit inside a very small room, the label was linked to the nearest outline, or two labels share one outline |
+| – Skipped / ✗ Failed | Nothing written; the Note says why (no outline found, empty Floor value, already done…) |
+| ○ Not in spreadsheet | A room label in the drawing has no spreadsheet row (e.g. `ELECT1` vs `ELEC1`) |
+| ○ Not in drawing | A spreadsheet row for this building has no label in this drawing (often another floor) |
+
+The **Log** tab has the full step-by-step log.
+
+### 6. Check the Output
+
+The annotated DWG is saved where you chose in step 5; the full path is shown
+in the log and the completion message. The original file is **never modified**.
+
+---
+
+## How It Works
+
+### Pipeline Overview
+
+```
+DWG File (input)
+  |
+  v
+[AutoCAD COM: SaveAs DXF]     -- AutoCAD converts to DXF format
+  |
+  v
+[ezdxf: Scan DXF]             -- Python reads TEXT, MTEXT, POLYLINE entities
+  |
+  v
+[Match rooms to polygons]     -- Point-in-polygon test links text to boundaries
+  |
+  v
+[Match rooms to spreadsheet]  -- Room IDs matched case-insensitively
+  |
+  v
+[ezdxf: Room layers]         -- Outline copies, key texts, detail texts on 3 layers
+  |
+  v
+[AutoCAD COM: SaveAs DWG]     -- AutoCAD converts back to DWG format
+  |
+  v
+DWG File (output: *_annotated.dwg)
+```
+
+### Text-to-Polygon Association
+
+For each room identifier found in the drawing:
+
+1. **Bounding box pre-filter** — skip polygons that clearly don't contain the text
+2. **Point-in-polygon test** — ray-casting algorithm on remaining candidates
+3. **Smallest area wins** — if multiple polygons contain the point, pick the tightest room boundary
+4. **Nearest fallback** — if no polygon contains the text, use nearest centroid (configurable)
+
+### Room Identifier Detection
+
+For multi-line labels (e.g. the room number with the area underneath, or a room name
+above the number), the first line that looks like a room identifier is used.
+
+Text entities are flagged as room identifiers if:
+- Not empty, length ≤ 20 characters, ≤ 3 words
+- Contains at least 1 digit
+- Matches pattern: `101`, `102A`, `B201`, `LAB-101`
+- Does NOT match: `"This is a title"`, `"Exit"`, `"Men's Restroom"`
+
+### Building ID Validation
+
+| DWG Filename | Extracted Building ID |
+|---|---|
+| `0132_SATELLITE DISH LAB.dwg` | `0132` |
 | `ENGR_floor1.dwg` | `ENGR` |
 | `SCI2_floor2.dwg` | `SCI2` |
-| `0132_LAB_01.dwg` | `0132` |
 
-The spreadsheet is filtered to only rows matching this building ID before
-room matching occurs. This prevents cross-building annotation errors.
+The spreadsheet is filtered to only rows matching this building ID before matching occurs.
 
 ---
 
-## Spreadsheet Header Row
+## Input File Requirements
 
-For **Excel** files, the actual header row is configurable (default: **3rd row**, index 2).
-For **CSV** files, the default is row 0. Both are set in `config.py`:
+### Spreadsheet
 
-```python
-EXCEL_HEADER_ROW = 2   # 3rd row
-CSV_HEADER_ROW = 0     # 1st row
+- **Formats:** CSV, XLS, or XLSX
+- **Required columns:** At minimum, a room identifier column and a building identifier column
+- **Header row:**
+  - Excel files: default is the **3rd row** (index 2). Change in `config.py` if needed.
+  - CSV files: default is the **1st row** (index 0).
+- Column names are normalized automatically (spaces, hyphens, underscores, mixed case all handled)
+
+### DWG Drawing
+
+- Room identifiers must be **standalone TEXT or MTEXT entities** (not inside blocks)
+- Room boundaries must be **closed POLYLINE or LWPOLYLINE entities**
+- Only **Model Space** is scanned (Paper Space is ignored)
+- AutoCAD must be running and able to open the file
+
+---
+
+## Output Files
+
+| File | Description |
+|---|---|
+| `<name>_annotated.dwg` (name and folder are your choice) | The original drawing plus the room layers (outline copy, key text and any detail texts per matched room), saved as a native AutoCAD 2018 DWG. |
+
+The original DWG is **never modified**, and nothing is written next to it:
+
+- Conversion works on a **copy** of the drawing in a private temporary folder,
+  which is deleted when the run ends.
+- If the drawing is **open in AutoCAD**, it is left untouched. If it has unsaved
+  changes, the log warns you that the last **saved** version was used — save first
+  if you want those changes included.
+- AutoCAD's dialog settings (FILEDIA, CMDDIA, PROXYNOTICE) are switched off only
+  while converting and **restored** afterwards.
+
+**Running again is safe:** if the drawing you pick is itself an output of the tool, everything
+the earlier run wrote (outline copies, keys, details) is removed and written again with the
+current settings — so you can add detail columns or rename the layers later, without
+duplicates. Layers left empty by that are removed. Hand edits to the tool's own entities
+(e.g. a moved key label) are lost on a re-run.
+
+A room number labelled **more than once** in the drawing uses the first label; the extra label
+is listed in Results as *Skipped* and the room is marked *⚠ Check*.
+
+---
+
+## ArcGIS Compatibility
+
+Every matched room is written on three layers (names set in the app):
+
+- **outlines layer** (`ROOM_OUTLINES`): a **copy** of the room's boundary polygon;
+- **keys layer** (`ROOM_KEYS`): a **text label with the room key** inside the room;
+- **details layer** (`ROOM_DETAILS`, only if detail columns are ticked): one text label per
+  ticked column (e.g. the room name), stacked under the key.
+
+The key is:
+
 ```
+<Building>-<Floor>-<Room>        e.g.  0132-01-101
+```
+
+- The three values are taken **as-is** from the matched spreadsheet row (so `01` stays
+  `01`, and `1` stays `1`), which keeps the key identical to your facilities data.
+- The original polygons, room labels and the drawing's own layers are not changed.
+- No blocks or attribute values are written.
+
+### How to Use It in ArcGIS
+
+1. **Add Data** → the annotated `.dwg` file. Use its **Polygon** feature class limited to the
+   outlines layer (definition query `Layer = 'ROOM_OUTLINES'`) and its **Annotation** feature
+   class limited to the keys layer (`Layer = 'ROOM_KEYS'`). The details layer
+   (`Layer = 'ROOM_DETAILS'`) is for display/labelling and is not needed for the join.
+2. **Spatial join**: join the key annotations to the room polygons that contain them, so
+   each polygon gets its key.
+3. To bring in other spreadsheet columns (department, occupant, area, ...), **join** your
+   spreadsheet to the polygons on that key. Build the same key in the spreadsheet by
+   combining the Building, Floor and Room columns with `-`.
+
+### When a Room Is Skipped
+
+The log and the Results tab list every room that was not written, and why:
+
+| Log message | Meaning |
+|---|---|
+| no room boundary polygon found | The room label is not inside (or near) any closed polyline |
+| empty Building / Floor / Room value | One of the three spreadsheet values is blank |
+| already has a room key | The drawing was already processed for this room |
+
+It also flags rooms worth checking: labels linked to the **nearest** polygon (label outside
+any polygon) and polygons that contain **more than one** room label.
+
+---
+
+## Configuration
+
+All tuneable values are in `config.py`. You can edit this file with any text editor (Notepad works).
+
+### Spreadsheet Settings
+
+| Constant | Default | Description |
+|---|---|---|
+| `EXCEL_HEADER_ROW` | `2` | 0-indexed header row for Excel (2 = 3rd row) |
+| `CSV_HEADER_ROW` | `0` | 0-indexed header row for CSV (0 = 1st row) |
+| `BUILDING_ID_LENGTH` | `4` | Number of characters from filename for building ID |
+| `SPREADSHEET_CACHE_DIR` | `%LOCALAPPDATA%\RoomAnnotator\spreadsheet_cache` | Parsed spreadsheets are cached here; an unchanged file loads instantly the next time |
+
+### Room Layer
+
+| Constant | Default | Description |
+|---|---|---|
+| `ROOM_OUTLINE_LAYER_DEFAULT` | `ROOM_OUTLINES` | Default outlines layer (editable in the app) |
+| `ROOM_KEY_LAYER_DEFAULT` | `ROOM_KEYS` | Default keys layer (editable in the app) |
+| `ROOM_DETAIL_LAYER_DEFAULT` | `ROOM_DETAILS` | Default details layer (editable in the app) |
+| `ROOM_KEY_SEPARATOR` | `-` | Separator between Building, Floor and Room in the key |
+| `ROOM_OUTLINE_LAYER_COLOR` / `ROOM_KEY_LAYER_COLOR` / `ROOM_DETAIL_LAYER_COLOR` | `3` / `2` / `4` | AutoCAD color index of each layer (green / yellow / cyan) |
+| `ROOM_TAG_GAP_FACTOR` | `0.5` | Gap between the room label, the key and each detail line, in label heights |
+
+### Polygon Detection
+
+| Constant | Default | Description |
+|---|---|---|
+| `MIN_POLYGON_AREA` | `1.0` | Ignore polygons smaller than this |
+| `ENABLE_NEAREST_FALLBACK` | `True` | Use nearest polygon when none contains text |
+| `MAX_NEAREST_DISTANCE` | `500.0` | Max centroid distance for nearest fallback |
+
+---
+
+## Troubleshooting & Error Handling
+
+### Setup Issues
+
+#### "Python is not installed or not in your PATH"
+
+- Install Python 3.10+ from https://www.python.org/downloads/
+- **Check "Add Python to PATH"** during installation
+- Restart your computer after installing
+- Run `setup.bat` again
+
+#### "Failed to create virtual environment"
+
+- Make sure you have write permissions to the folder
+- Try running Command Prompt as Administrator:
+  ```
+  cd C:\Tools\AutoCAD-Annotator
+  python -m venv .venv
+  ```
+
+#### "Failed to install dependencies"
+
+- Check your internet connection (dependencies are downloaded from the internet)
+- If behind a corporate proxy, ask your IT department for pip proxy settings
+- Try running manually:
+  ```
+  .venv\Scripts\pip.exe install -r requirements.txt
+  ```
+
+### Runtime Issues
+
+#### "Could not connect to AutoCAD"
+
+- **AutoCAD must be open and running** before you start the tool
+- Make sure AutoCAD is fully loaded (wait for the command prompt to appear)
+- If AutoCAD is open but the tool can't connect, try closing and reopening AutoCAD
+
+#### "DWG file not found"
+
+- Make sure the file path doesn't contain unusual characters
+- Try copying the DWG to a simple path like `C:\Drawings\`
+
+#### Application Hangs at "Converting DWG -> DXF"
+
+This means AutoCAD has a **dialog box open** that is blocking the conversion.
+
+**Fix:**
+1. **Alt+Tab** to AutoCAD
+2. Look for any popup dialog (save prompt, security warning, proxy graphics notice)
+3. **Click OK / Cancel / Close** on the dialog
+4. The application should resume automatically
+
+**Prevent this in the future:**
+- Close all other drawings in AutoCAD before running the tool
+- Dismiss any AutoCAD startup dialogs before starting
+
+#### "No room identifiers found in the drawing"
+
+This means the scanner didn't detect any room number text. Possible causes:
+- Room numbers are inside **block attributes** instead of standalone text (not supported yet)
+- Room numbers don't match the detection pattern (must contain at least 1 digit)
+- The drawing uses **Paper Space** (only Model Space is scanned)
+- Room text is on a frozen or off layer
+
+#### "No spreadsheet rows match building"
+
+- Check that your DWG filename starts with the correct building code (first 4 characters)
+- Check that your spreadsheet has a building column with matching values
+- Building matching is **case-insensitive**
+
+#### "No rooms matched"
+
+- The room IDs in the spreadsheet don't match the text in the drawing
+- Check for leading/trailing spaces in the spreadsheet
+- Check for different formatting (e.g., `Room 101` in spreadsheet vs `101` in drawing)
+- Matching is **case-insensitive** and **whitespace-trimmed**
+
+#### "WARNING: ... rooms skipped" or "... rooms failed"
+
+- See **When a Room Is Skipped** under ArcGIS Compatibility for what each message means
+- The log lists the affected room numbers
+- This is non-fatal — other rooms still get their layers
+
+### Still Having Issues?
+
+1. Check the **application log panel** at the bottom of the window — it shows detailed progress
+2. Look for `WARNING` or `ERROR` messages in the log
+3. Try with a simpler DWG file first to verify the setup works
+4. Make sure AutoCAD is not in the middle of a command (press `Escape` in AutoCAD first)
 
 ---
 
 ## Project Structure
 
 ```
-project_root/
-├── main.py                 # Entry point — launches the GUI
-├── config.py               # All configurable constants
-├── ui.py                   # Tkinter GUI (AppUI class)
-├── spreadsheet_loader.py   # CSV / XLS / XLSX reading
-├── autocad_scanner.py      # Single-pass AutoCAD ModelSpace scanner
-├── polygon_matcher.py      # Geometry + text→polygon + room matching
-├── annotation_writer.py    # MTEXT insertion with XData linkage
-├── metadata_utils.py       # XData read/write helpers
-├── utils.py                # Normalization, heuristics, geometry primitives
-├── requirements.txt        # Python dependencies
-└── README.md               # This file
+AutoCAD-Annotator/
+  setup.bat                 # One-time setup script (creates venv, installs deps)
+  run.bat                   # Launch script (starts the GUI application)
+  main.py                   # Entry point - Qt window (--tk: old Tkinter window, --selftest)
+  qt_ui.py                  # PySide6 window (files, columns, layers, details, results, log)
+  pipeline.py               # The processing steps, independent of the window
+  selftest.py               # --selftest: checks the app works on this computer
+  ui.py                     # Previous Tkinter window (kept for comparison)
+  config.py                 # All configurable constants (edit with Notepad)
+  dwg_converter.py          # DWG <-> DXF conversion via AutoCAD COM (minimal)
+  autocad_scanner.py        # Scans DXF for room texts, polygons, existing room keys
+  polygon_matcher.py        # Associates room text with room polygons + spreadsheet
+  annotation_writer.py      # Writes outline copies, key texts and detail texts (3 layers)
+  metadata_utils.py         # XData linking each copy to its source polygon
+  spreadsheet_loader.py     # CSV / XLS / XLSX file loading
+  utils.py                  # Normalization, heuristics, geometry helpers
+  requirements.txt          # Python package dependencies
+  run_tests.bat             # Runs the automated tests
+  tests/                    # Automated tests (unittest)
+  build_exe.spec            # PyInstaller build of the standalone "Room Layer Tool.exe"
+  packaging/README.md       # Short guide shipped inside the standalone ZIP
+  PROJECT_CONTEXT.md        # Full project history, decisions and current state
+  README.md                 # This file
 ```
 
----
+### Running the Tests
 
-## Text → Polygon Association
+After `setup.bat`, double-click **`run_tests.bat`** (or run it from a command prompt).
+It runs the offline tests, which need no AutoCAD and take a few seconds:
 
-For each room identifier TEXT/MTEXT:
-
-1. **Bounding box pre-filter** — skip polygons whose bbox doesn't contain the text point
-2. **Point-in-polygon test** — ray-casting algorithm on remaining candidates
-3. **Smallest area wins** — if multiple polygons contain the point, pick the tightest
-4. **Nearest fallback** — if none contain the point, use nearest centroid (configurable)
-
----
-
-## Annotation ↔ Polygon Linkage (XData)
-
-Each inserted MTEXT carries AutoCAD XData under the application name `ROOM_INFO_AI`:
-
-| XData Field | Content |
-|---|---|
-| Application | `ROOM_INFO_AI` |
-| Room ID | e.g. `101` |
-| Polygon Handle | AutoCAD entity handle of the linked polygon |
-| Building ID | e.g. `ENGR` |
-| Text Handle | Handle of the source room identifier text |
-| Match Method | `contains` or `nearest` |
-| Annotation Type | `room_info` |
-
-### Querying the linkage later
-
-```python
-from metadata_utils import read_xdata
-
-# Given an annotation entity from AutoCAD:
-meta = read_xdata(annotation_entity)
-if meta:
-    print(f"Room: {meta.room_id}")
-    print(f"Polygon handle: {meta.polygon_handle}")
-    print(f"Building: {meta.building_id}")
-    print(f"Method: {meta.match_method}")
-
-    # Retrieve the polygon by handle:
-    polygon = doc.HandleToObject(meta.polygon_handle)
-    print(f"Polygon area: {polygon.Area}")
+```
+run_tests.bat
 ```
 
----
+To also test the real AutoCAD conversion (AutoCAD must be installed; it works on
+temporary test drawings only and restores AutoCAD's settings afterwards):
 
-## Room Identifier Detection Heuristics
+```
+run_tests.bat acad
+```
 
-Text is flagged as a room identifier if:
-- Not empty, length ≤ 20, ≤ 3 words
-- Contains at least 1 digit
-- Matches `^[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?$`
-
-**Pass:** `101`, `102A`, `B201`, `LAB-101`
-**Fail:** `"This is a title"`, `"Exit"`, `"Men's Restroom"`
-
-All constants in `config.py`.
-
----
-
-## Configuration (`config.py`)
-
-| Constant | Default | Description |
-|---|---|---|
-| `EXCEL_HEADER_ROW` | `2` | 0-indexed header row for Excel |
-| `CSV_HEADER_ROW` | `0` | 0-indexed header row for CSV |
-| `BUILDING_ID_LENGTH` | `4` | Characters from filename for building ID |
-| `OUTPUT_LAYER` | `ROOM_INFO_AI` | Annotation layer name |
-| `ANNOTATION_COLOR` | `3` | AutoCAD color index (green) |
-| `VERTICAL_SPACING_MULTIPLIER` | `1.6` | Line spacing below room ID |
-| `MTEXT_WIDTH_FACTOR` | `25.0` | MTEXT width = height × factor |
-| `MIN_POLYGON_AREA` | `1.0` | Ignore degenerate polygons |
-| `ENABLE_NEAREST_FALLBACK` | `True` | Use nearest polygon when none contains text |
-| `MAX_NEAREST_DISTANCE` | `500.0` | Max centroid distance for fallback |
-| `SCAN_PROGRESS_INTERVAL` | `2000` | Log progress every N entities |
+A result ending in `OK` means everything passed. "Expected failures" are tests for
+known, not-yet-fixed limitations; they are reported but do not fail the run.
 
 ---
 
 ## Assumptions and Limitations
 
-- AutoCAD must be **installed and licensed** on the machine.
-- Room identifiers must be **standalone TEXT or MTEXT** (not block attributes).
-- Room polygons must be **closed LWPOLYLINE or 2dPolyline** entities.
-- Only **Model Space** is scanned.
-- First occurrence of each room ID is used for annotation placement.
-- XData persistence depends on the DWG format version supporting it.
-
----
-
-## Future Improvements
-
-1. **Block attribute scanning** — read room IDs from block attributes
-2. **Preview table** — show text→polygon→spreadsheet matches before writing
-3. **Export match report** — CSV of matched/unmatched rooms
-4. **Fuzzy matching** — edit-distance fallback for near-identical room IDs
-5. **Multi-sheet Excel** — prompt for sheet selection
-6. **Paper Space support** — scan Paper Space viewports
-7. **Sidecar JSON** — additional external mapping file as backup
+- **Windows only** — AutoCAD COM automation requires Windows.
+- **AutoCAD must be installed and licensed** — the tool uses AutoCAD for DWG/DXF conversion.
+- **AutoCAD must be running** — start AutoCAD before launching the tool.
+- Room identifiers must be **standalone TEXT or MTEXT** entities (not block attributes).
+- Room polygons must be **closed POLYLINE or LWPOLYLINE** entities.
+- Only **Model Space** is scanned (Paper Space is ignored).
+- The first occurrence of each room ID in the drawing is used.
+- Rooms must have a **Floor** value in the spreadsheet to get a layer.
+- The **first 4 characters** of the DWG filename are used as the building identifier.
+- The original DWG file is **never modified** — output is always a new file, saved where you choose.
 
 ---
 
