@@ -477,9 +477,12 @@ This means the scanner didn't detect any room number text. Possible causes:
 AutoCAD-Annotator/
   setup.bat                 # One-time setup script (creates venv, installs deps)
   run.bat                   # Launch script (starts the GUI application)
-  main.py                   # Entry point - launches the Tkinter GUI
+  main.py                   # Entry point - Qt window (--tk: old Tkinter window, --selftest)
+  qt_ui.py                  # PySide6 window (files, columns, room layer, results table, log)
+  pipeline.py               # The processing steps, independent of the window
+  selftest.py               # --selftest: checks the app works on this computer
+  ui.py                     # Previous Tkinter window (kept for comparison)
   config.py                 # All configurable constants (edit with Notepad)
-  ui.py                     # Tkinter GUI (dark theme, log panel, progress bar)
   dwg_converter.py          # DWG <-> DXF conversion via AutoCAD COM (minimal)
   autocad_scanner.py        # Scans DXF for room texts, polygons, existing room keys
   polygon_matcher.py        # Associates room text with room polygons + spreadsheet
@@ -490,6 +493,9 @@ AutoCAD-Annotator/
   requirements.txt          # Python package dependencies
   run_tests.bat             # Runs the automated tests
   tests/                    # Automated tests (unittest)
+  build_exe.spec            # PyInstaller build of the standalone "Room Layer Tool.exe"
+  packaging/README.md       # Short guide shipped inside the standalone ZIP
+  PROJECT_CONTEXT.md        # Full project history, decisions and current state
   README.md                 # This file
 ```
 
