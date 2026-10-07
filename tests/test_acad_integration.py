@@ -109,9 +109,9 @@ class TestAutoCADRoundTrip(TempDirTestCase):
         handles = {e.dxf.handle for e in msp}
         layers = room_key_polygons(check)
         self.assertEqual(set(layers), set(EXPECTED_KEYS))             # room keys survive
-        self.assertIn("ROOM_KEYS", check.layers)                       # the one room layer
+        self.assertIn("ROOM_KEYS", check.layers)                       # key labels layer
         for name, room in EXPECTED_KEYS.items():
-            self.assertEqual(layers[name][0].dxf.layer, "ROOM_KEYS")
+            self.assertEqual(layers[name][0].dxf.layer, "ROOM_OUTLINES")
             meta = read_xdata(layers[name][0])
             self.assertEqual(meta.room_id, room)
             self.assertIn(meta.polygon_handle, handles)                 # polygon link holds

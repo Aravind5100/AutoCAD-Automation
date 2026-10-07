@@ -84,7 +84,8 @@ def _add_closed(msp, points, version):
 
 
 def run_pipeline(drawing_path: str, sheet_path: str, log=None,
-                 building_col="Building ID", floor_col="Floor", room_col="Room Number"):
+                 building_col="Building ID", floor_col="Floor", room_col="Room Number",
+                 detail_cols=()):
     """Scan → associate → match → write, as ``AppUI._run_annotation`` does.
 
     Returns (scan, summary, annotated_doc, created_count).
@@ -94,20 +95,21 @@ def run_pipeline(drawing_path: str, sheet_path: str, log=None,
     scan = scan_drawing(drawing_path, log_fn=log)
     assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons, log_fn=log)
     summary = match_rooms(scan.room_texts, assoc, df, room_col,
-                          [building_col, floor_col, room_col])
+                          [building_col, floor_col, room_col, *detail_cols])
     doc, created = write_room_layers(
         scan.doc, summary.results, scan.room_texts, building_col, floor_col, room_col,
-        "0132", scan.existing_annotation_room_ids, log_fn=log,
+        "0132", scan.existing_annotation_room_ids, log_fn=log, detail_cols=detail_cols,
     )
     return scan, summary, doc, created
 
 
 def room_key_labels(doc) -> dict[str, list]:
     """{room key: [key TEXT entities]} written by the tool (found by their XData)."""
-    from metadata_utils import read_xdata
+    from metadata_utils import KEY, read_xdata
     result: dict[str, list] = {}
     for e in doc.modelspace().query("TEXT"):
-        if read_xdata(e) is not None:
+        meta = read_xdata(e)
+        if meta is not None and meta.annotation_type == KEY:
             result.setdefault(e.dxf.text, []).append(e)
     return result
 
@@ -123,6 +125,19 @@ def room_key_polygons(doc) -> dict[str, list]:
         meta = read_xdata(e)
         if meta is not None:
             result.setdefault(key_of_room.get(meta.room_id, meta.room_id), []).append(e)
+    return result
+
+
+def detail_labels(doc) -> dict[str, list]:
+    """{room ID: [detail TEXT entities, top to bottom]} written by the tool."""
+    from metadata_utils import DETAIL, read_xdata
+    result: dict[str, list] = {}
+    for e in doc.modelspace().query("TEXT"):
+        meta = read_xdata(e)
+        if meta is not None and meta.annotation_type == DETAIL:
+            result.setdefault(meta.room_id, []).append(e)
+    for texts in result.values():
+        texts.sort(key=lambda t: -t.dxf.insert.y)
     return result
 
 

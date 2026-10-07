@@ -1,8 +1,8 @@
 """
 metadata_utils.py
 -----------------
-XData helpers for linking the room-layer polygon copies back to the
-source room polygon and room label.
+XData helpers for linking everything the tool writes (outline copies, key
+labels, detail labels) back to the source room polygon and room label.
 
 Uses **ezdxf** for all XData read/write operations (no COM).
 """
@@ -22,13 +22,18 @@ from config import XDATA_APP_NAME
 
 @dataclass
 class AnnotationMetadata:
-    """Metadata stored as XData on each room-layer polygon copy."""
+    """Metadata stored as XData on each entity the tool writes."""
     room_id: str = ""
     polygon_handle: str = ""
     building_id: str = ""
     text_handle: str = ""
     match_method: str = ""          # "contains" | "nearest" | ""
-    annotation_type: str = "room_layer"
+    annotation_type: str = ""       # OUTLINE | KEY | DETAIL ("room_layer" before the 3-layer split)
+    field: str = ""                 # DETAIL only: the spreadsheet column the value comes from
+
+
+# annotation_type values
+OUTLINE, KEY, DETAIL = "room_outline", "room_key", "room_detail"
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +66,8 @@ def write_xdata(entity, meta: AnnotationMetadata) -> bool:
             (1000, meta.match_method),
             (1000, meta.annotation_type),
         ]
+        if meta.field:
+            xdata_list.append((1000, meta.field))
         entity.set_xdata(XDATA_APP_NAME, xdata_list)
         return True
     except Exception:
@@ -86,6 +93,7 @@ def read_xdata(entity) -> AnnotationMetadata | None:
             text_handle=str(xdata[3][1]),
             match_method=str(xdata[4][1]),
             annotation_type=str(xdata[5][1]),
+            field=str(xdata[6][1]) if len(xdata) > 6 else "",
         )
     except Exception:
         return None

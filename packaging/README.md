@@ -3,8 +3,9 @@
 Puts room information from a facilities spreadsheet into an AutoCAD floor plan, ready for ArcGIS.
 
 For every room that appears in both the drawing and the spreadsheet, the tool writes a copy
-of the room's outline and a text label with its key **`[Building]-[Floor]-[Room]`** (for
-example `0036-1-022`). All rooms go on **one layer**, `ROOM_KEYS` by default. In ArcGIS the
+of the room's outline (layer `ROOM_OUTLINES`), a text label with its key
+**`[Building]-[Floor]-[Room]`** (for example `0036-1-022`, layer `ROOM_KEYS`) and, if you
+choose, other spreadsheet values such as the room name (layer `ROOM_DETAILS`). In ArcGIS the
 key labels are joined to the room polygons that contain them, and from there to the spreadsheet.
 
 The original drawing is never changed. The result is saved as a new file wherever you choose.
@@ -39,8 +40,10 @@ To remove it, delete the folder.
    - **Building ID** is filled in from the start of the drawing's file name
      (`0036_Maintenance_01.dwg` → `0036`). Correct it if needed.
 2. **Columns & output**: check the **Room**, **Building** and **Floor** columns (normally
-   detected automatically); the green text shows an example key. **Room layer** is the layer
-   that receives every room (default `ROOM_KEYS`).
+   detected automatically); the green text shows an example key. The three **layer** boxes
+   name the layers for outlines (`ROOM_OUTLINES`), keys (`ROOM_KEYS`) and details (`ROOM_DETAILS`).
+   **Room details (optional)**: open the drop-down and tick one or more columns, such as
+   *Room Name*, to write their values in each room, one line each, under the key.
 3. Click **▶ Write Room Keys** and choose where to save the result.
    For DWG files AutoCAD is started (or used, if already open) to convert the drawing;
    a floor plan takes about 10–20 seconds. **Cancel** stops after the current step and saves nothing.
@@ -58,8 +61,9 @@ The **Log** tab shows every step. The ☾/☀ button (top right) switches betwee
 
 ## In ArcGIS
 
-Add the result drawing. Use its **Polygon** and **Annotation** feature classes limited to the
-room layer (e.g. definition query `Layer = 'ROOM_KEYS'`), then **spatially join** the key
+Add the result drawing. Use its **Polygon** feature class limited to the outlines layer
+(definition query `Layer = 'ROOM_OUTLINES'`) and its **Annotation** feature class limited to the
+keys layer (`Layer = 'ROOM_KEYS'`), then **spatially join** the key
 annotations to the polygons that contain them. To bring in other columns (department,
 occupant, area…), join the spreadsheet on the key, built by combining its Building, Floor and
 Room columns with `-`.

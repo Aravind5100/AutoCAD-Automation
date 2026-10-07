@@ -27,17 +27,24 @@ BUILDING_ID_LENGTH: int = 4
 # ---------------------------------------------------------------------------
 # Room layer output (ArcGIS)
 # ---------------------------------------------------------------------------
-# All matched rooms go on ONE layer (name editable in the app). For each room:
-# a copy of its outline + a text label with its key
-#   <Building><SEP><Floor><SEP><Room>      e.g. 0132-01-101
-# with the three values taken as-is from the matched spreadsheet row.
-ROOM_LAYER_DEFAULT: str = "ROOM_KEYS"
+# Matched rooms are written on THREE layers (names editable in the app):
+#   outlines  a copy of each room's outline
+#   keys      a text label with the room key inside each room
+#               <Building><SEP><Floor><SEP><Room>      e.g. 0132-01-101
+#             (the three values as-is from the matched spreadsheet row)
+#   details   optional: values of spreadsheet columns the user picks (e.g. Room
+#             Name), one TEXT per value, stacked under the key label
+ROOM_OUTLINE_LAYER_DEFAULT: str = "ROOM_OUTLINES"
+ROOM_KEY_LAYER_DEFAULT: str = "ROOM_KEYS"
+ROOM_DETAIL_LAYER_DEFAULT: str = "ROOM_DETAILS"
 ROOM_KEY_SEPARATOR: str = "-"
-ROOM_LAYER_COLOR: int = 3          # AutoCAD colour index (3 = green)
-# A text label with the key is written on the room layer, just under the room
-# label: same height as the room label, this many label-heights of gap below it
+ROOM_OUTLINE_LAYER_COLOR: int = 3  # AutoCAD colour index (3 = green)
+ROOM_KEY_LAYER_COLOR: int = 2      # 2 = yellow
+ROOM_DETAIL_LAYER_COLOR: int = 4   # 4 = cyan
+# The key label goes just under the room label: same height as the room label,
+# this many label-heights of gap below it (also the gap between detail lines)
 ROOM_TAG_GAP_FACTOR: float = 0.5
-# Characters AutoCAD does not allow in layer names (checked for the room layer name)
+# Characters AutoCAD does not allow in layer names (checked for the output layer names)
 LAYER_NAME_FORBIDDEN_CHARS: str = '<>/\\":;?*|=`'
 # Outline layers written by the old block-based versions; never room boundaries
 LEGACY_OUTLINE_LAYERS: tuple[str, ...] = ("ROOM_BLOCK_OUTLINE",)

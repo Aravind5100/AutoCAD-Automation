@@ -7,7 +7,7 @@
 > **Evidence labels:** **[verified]** = checked by reading or running code/files ·
 > **[history]** = from git commits or old docs · **[inferred]** = reasoned, not confirmed — treat as a hypothesis.
 >
-> Last updated: **2026-10-07** (end of the long working session that started 2026-09-29).
+> Last updated: **2026-10-07** (D19: three output layers + optional detail columns).
 
 ---
 
@@ -15,19 +15,21 @@
 
 ### 0.1 Current state
 - **Branch `main`** (GitHub default branch since the owner switched it; verified 2026-10-07) holds the current
-  app: **PySide6 (Qt) desktop window**, all matched rooms written to **ONE layer** (default `ROOM_KEYS`).
-  Last code commit: `4dc3c21`.
-- For each matched room the output drawing gets, on that one layer: a **copy of the room outline** + a **TEXT
-  "tag" with the key `Building-Floor-Room`** (e.g. `0036-1-022`) placed inside the room.
-- **Tests:** 87 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
+  app: **PySide6 (Qt) desktop window**, matched rooms written on **THREE layers** (D19, 2026-10-07).
+- For each matched room the output drawing gets: a **copy of the room outline** on `ROOM_OUTLINES`, a **TEXT
+  "tag" with the key `Building-Floor-Room`** (e.g. `0036-1-022`) inside the room on `ROOM_KEYS`, and — only
+  if the user ticked detail columns (the "Room details" multi-select drop-down in step 2) — one TEXT per ticked column (e.g. Room Name)
+  under the key on `ROOM_DETAILS`. All three names are editable in the app.
+- **Tests:** 91 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
   B10/B11). The 2 real-AutoCAD integration tests pass (`run_tests.bat acad`).
-- **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run.
+- **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run
+  (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
 
 ### 0.2 Pending / next steps (owner had not decided yet)
 1. **Rebuild the supervisor package.** `Room_Layer_Tool_v2.0.zip` (in the repo folder, gitignored) and `dist/`
-   were built **before** the one-layer change (D16) — they still create **one layer per room**. Rebuild as
-   **v2.1** before sending (recipe in §10.6). The owner has not said whether v2.0 was already sent.
-2. **The owner had not yet reported** how their own run of the one-layer version looked in AutoCAD.
+   were built **before** D16/D19 — they still create **one layer per room**. Rebuild (as v2.1 or later) once the
+   owner is happy with the 3-layer output (recipe in §10.6). The owner has not said whether v2.0 was already sent.
+2. **The owner has not yet looked at the 3-layer output (D19) in AutoCAD.**
 3. **ArcGIS workflow not verified by anyone in this project.** The documented flow (polygon + annotation
    feature classes filtered to the room layer → spatial join → join spreadsheet on the key) is reasoned, not tested.
 4. **UI ideas not done:** after-run buttons (open result in AutoCAD / open folder / export results CSV) —
@@ -69,17 +71,18 @@ A Windows desktop tool (**Python + PySide6/Qt**; older Tkinter window on `dev_ex
 - an **AutoCAD floor plan** (DWG, or DXF),
 
 finds the room-number labels and room-boundary polygons in the drawing, matches each room to its spreadsheet row
-(only rows of the drawing's building), and writes every matched room onto **ONE layer** (default `ROOM_KEYS`,
-editable in the app): a **copy of the room outline** + a **TEXT with its key** `[Building]-[Floor]-[Room]`
-(values exactly as in the spreadsheet row, e.g. `0036-1-022`). Both carry XData linking them to the source polygon
-and label. In ArcGIS, the key annotations are spatially joined to the polygons on that layer.
+(only rows of the drawing's building), and writes every matched room onto **three layers** (names editable in the
+app): a **copy of the room outline** (`ROOM_OUTLINES`), a **TEXT with its key** `[Building]-[Floor]-[Room]`
+(values exactly as in the spreadsheet row, e.g. `0036-1-022`; `ROOM_KEYS`) and optional **detail TEXTs** with the
+values of user-ticked columns such as Room Name (`ROOM_DETAILS`). All carry XData linking them to the source polygon
+and label. In ArcGIS, the key annotations are spatially joined to the polygons of the outlines layer.
 
 Output: a new DWG (or DXF) wherever the user chooses (Save As dialog; starts in Documents; the input file can never be
 chosen). The original drawing is never modified. AutoCAD is used only (over COM) to convert DWG ↔ DXF; all drawing
 reading/writing is done with **ezdxf**. Distributed to others as a **standalone `Room Layer Tool.exe`** (PyInstaller) in a ZIP.
 
 Output model history: MTEXT notes (v1) → attributed blocks (v2) → one layer per room (2026-09-29, D14) →
-**one layer for all rooms (2026-10-01, D16)**.
+one layer for all rooms (2026-10-01, D16) → **outlines / keys / details layers (2026-10-07, D19)**.
 
 ---
 
@@ -108,7 +111,7 @@ rooms carry a `Building-Floor-Room` key that ArcGIS can join to the facilities t
 | Layer | Technology | Version [verified] | Why |
 |---|---|---|---|
 | Language | Python | 3.13.14 in `.venv` (code needs 3.10+) | Data + CAD libraries |
-| GUI (`main`) | **PySide6 (Qt 6)** — `qt_ui.py`, light/dark QSS themes, QThreads | PySide6-Essentials 6.11.2 (77 MB wheel) | Owner: desktop tool for 1–2 users; Qt for a results table + modern look. FastAPI+React was discussed and **rejected** (adds a server, Node build, upload/download; no desktop benefit) |
+| GUI (`main`) | **PySide6 (Qt 6)** — `qt_ui.py`, light/dark QSS themes (colorhunt palette #FEF5ED / #D3E4CD / #ADC2A9 / #99A799 + darker sage #4F5F4F for title text, owner 2026-10-07), QThreads | PySide6-Essentials 6.11.2 (77 MB wheel) | Owner: desktop tool for 1–2 users; Qt for a results table + modern look. FastAPI+React was discussed and **rejected** (adds a server, Node build, upload/download; no desktop benefit) |
 | GUI (legacy) | Tkinter/ttk — `ui.py` (`main.py --tk`; default on `dev_exe`) | stdlib | Kept as the stable fallback |
 | Spreadsheets | pandas + openpyxl + xlrd | pandas **3.0.1**, openpyxl 3.1.5, xlrd 2.0.2 | Standard |
 | DXF read/write | **ezdxf** | 1.4.3 | Pure Python; no AutoCAD needed for entity work |
@@ -127,7 +130,8 @@ rooms carry a `Building-Floor-Room` key that ArcGIS can join to the facilities t
 ### 4.1 Pipeline (`pipeline.run`, called by the Qt window on a `RunWorker` QThread)
 
 ```
-RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, building_id, layer="ROOM_KEYS")
+RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, building_id,
+           layers=OutputLayers(outlines, keys, details), detail_cols=[...])
   1 Filter spreadsheet to building_id (BEFORE AutoCAD; 0 rows → RunStopped)
   2 [DWG only] dwg_converter.dwg_to_dxf(dwg, work_dir)
         _acad_session: Dispatch AutoCAD (launches it if not running), Visible=True,
@@ -143,13 +147,18 @@ RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, bui
         ScanResult.doc keeps the parsed drawing (the writer reuses it); 0 labels → RunStopped
   4 polygon_matcher.associate_texts_with_polygons: bbox prefilter → ray cast → smallest containing polygon
         ("contains"); else nearest centroid ≤ 500 units ("nearest")
-  5 polygon_matcher.match_rooms(..., [building_col, floor_col, room_col]): strip+lowercase exact match,
+  5 polygon_matcher.match_rooms(..., [building_col, floor_col, room_col] + detail_cols): strip+lowercase exact match,
         first occurrence wins; unmatched lists both ways; 0 matches → RunStopped
-  6 annotation_writer.write_room_layers(scan.doc, ..., outcomes=[...], layer=req.layer)
-        ensure the layer (colour 3); per matched room: key = build_room_key(row values as-is)
-        outline copy (LWPOLYLINE; POLYLINE if R12) + key TEXT on the layer; XData on both
-        tag placement: under / above the room label, or centred in the room, at 100/75/50% of the label height —
-        first spot fully inside the polygon; else the first spot whose start is inside; else under the label
+  6 annotation_writer.write_room_layers(scan.doc, ..., outcomes=[...], layers=req.layers, detail_cols=...)
+        ensure the layers (outlines 3 green, keys 2 yellow, details 4 cyan — details only if columns ticked);
+        per matched room: key = build_room_key(row values as-is)
+        outline copy (LWPOLYLINE; POLYLINE if R12) on outlines + key TEXT on keys + one TEXT per non-empty
+        ticked column on details; XData on all (annotation_type room_outline / room_key / room_detail;
+        details also carry the column name)
+        placement: key + detail lines as one stacked block — under / above the room label, or centred in the
+        room, at 100/75/50% of the label height — first spot fully inside the polygon; else the first spot whose
+        start is inside; else under the label. If the block never fits, the key is placed alone that way
+        (same as without details) and the details are stacked under it (→ needs_check)
         RoomOutcome per room: created / skipped (already has a key, no polygon, empty key part) / failed;
         needs_check (nearest link, tag doesn't fit, polygon shared by 2+ labels)
   7 [DWG] dxf_doc_to_dwg → temp DXF in work_dir → AutoCAD SaveAs native 2018 DWG (code 64) | [DXF] doc.saveas
@@ -157,29 +166,31 @@ RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, bui
 → RunResult(created, matched, sheet_rows, labels_found, polygons_found, rows=[ResultRow(room, key, status, note, needs_check)])
   rows also include "not in spreadsheet" (drawing labels) and "not in drawing" (sheet rows of this building)
 ```
-The Tkinter `ui.py` has its **own copy** of this flow (`AppUI._run_annotation`), always using layer `ROOM_KEYS`.
+The Tkinter `ui.py` has its **own copy** of this flow (`AppUI._run_annotation`), always using the default
+layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk window as is).
 
 ### 4.2 Module map
 
 | File | Responsibility |
 |---|---|
 | `main.py` | Entry point: Qt window; `--tk` → Tkinter window; `--selftest [report] [drawing sheet building output]` → `selftest.py` |
-| `qt_ui.py` | PySide6 `MainWindow`: **1 Files** (spreadsheet, drawing, editable Building ID), **2 Columns & output** (Room/Building/Floor combos, key preview for the chosen building, **Room layer** box validated by `layer_name_problem` and remembered), **▶ Write Room Keys** / Cancel, step progress bar, **Results** tab (Room / Key / Status / Note; filter All / Created / Needs check / Skipped/failed / Not matched; summary line), **Log** tab, ☾/☀ theme toggle. `SheetLoader` + `RunWorker` QThreads; QSettings `RoomAnnotator/RoomLayerTool` (theme, layer_name, browse_dir, output_dir). Pure helpers: `check_output_path`, `default_output_dir`, `status_label`, `row_matches_filter`, `stylesheet` |
+| `qt_ui.py` | PySide6 `MainWindow`: **1 Files** (spreadsheet, drawing, editable Building ID), **2 Columns & output** (Room/Building/Floor combos, key preview for the chosen building, **Outlines / Keys / Details layer** boxes validated by
+`layer_name_problem`, must differ, remembered), **Room details** (`MultiSelectDropdown`: button + menu of QCheckBoxes, stays open while ticking, remembered; a QComboBox with checkable items did not register clicks on Windows), **▶ Write Room Keys** / Cancel, step progress bar, **Results** tab (Room / Key / Status / Note; filter All / Created / Needs check / Skipped/failed / Not matched; summary line), **Log** tab, ☾/☀ theme toggle. `SheetLoader` + `RunWorker` QThreads; QSettings `RoomAnnotator/RoomLayerTool` (theme, layer_outlines/keys/details, detail_cols, browse_dir, output_dir). Pure helpers: `check_output_path`, `default_output_dir`, `status_label`, `row_matches_filter`, `stylesheet` |
 | `pipeline.py` | UI-independent run (§4.1): `RunRequest`, `RunResult`, `ResultRow`, `RunStopped`, `RunCancelled` |
 | `selftest.py` | `--selftest`: library check, built-in synthetic DXF job, AutoCAD registry check (doesn't start AutoCAD); optional real headless job; writes a report or shows a dialog |
-| `ui.py` | Legacy Tkinter `AppUI` (same pipeline inline; fixed layer `ROOM_KEYS`) |
-| `config.py` | Tunables: header rows (Excel row 3), `SPREADSHEET_CACHE_DIR`, `BUILDING_ID_LENGTH`, `ROOM_LAYER_DEFAULT`, `ROOM_KEY_SEPARATOR`, `ROOM_LAYER_COLOR`, `ROOM_TAG_GAP_FACTOR`, `LAYER_NAME_FORBIDDEN_CHARS`, `LEGACY_OUTLINE_LAYERS`, heuristics, polygon limits, `XDATA_APP_NAME`, AutoCAD save codes (`ACAD_DXF_FORMAT=65`, `ACAD_DWG_FORMAT=64`), `COM_RETRY_SECONDS`, `OUTPUT_SUFFIX` |
+| `ui.py` | Legacy Tkinter `AppUI` (same pipeline inline; fixed default layers, no details) |
+| `config.py` | Tunables: header rows (Excel row 3), `SPREADSHEET_CACHE_DIR`, `BUILDING_ID_LENGTH`, `ROOM_OUTLINE/KEY/DETAIL_LAYER_DEFAULT`, `ROOM_KEY_SEPARATOR`, `ROOM_*_LAYER_COLOR`, `ROOM_TAG_GAP_FACTOR`, `LAYER_NAME_FORBIDDEN_CHARS`, `LEGACY_OUTLINE_LAYERS`, heuristics, polygon limits, `XDATA_APP_NAME`, AutoCAD save codes (`ACAD_DXF_FORMAT=65`, `ACAD_DWG_FORMAT=64`), `COM_RETRY_SECONDS`, `OUTPUT_SUFFIX` |
 | `spreadsheet_loader.py` | `load_spreadsheet(path, use_cache=False)` — dtype=str, trims cells, drops blank rows (pandas 2/3 safe); pickle cache keyed by path+size+mtime+header rows (the UI uses it: 36k-row xlsx 13–25 s → 0.1 s) |
 | `utils.py` | Column normalisation; building-ID extract/detect/filter; floor-column detect; `is_room_identifier`; geometry; `build_room_key` (as-is); `layer_name_problem` |
 | `dwg_converter.py` | `dwg_to_dxf`, `dxf_doc_to_dwg`, `make_work_dir`/`remove_work_dir`, `_acad_session`, `_call`, `_close`, `_warn_if_unsaved` |
 | `autocad_scanner.py` | `RoomText` (incl. `label_bbox`), `RoomPolygon`, `ScanResult` (incl. `doc`), `scan_drawing` |
 | `polygon_matcher.py` | `TextPolygonAssociation`, `RoomMatch`, `MatchSummary`; association + matching |
-| `annotation_writer.py` | `write_room_layers` (name kept from the per-room-layer era) + `RoomOutcome` (`key`, `status`, `note`, `needs_check`) |
-| `metadata_utils.py` | `AnnotationMetadata` (type `room_layer`), `register_xdata_app`, `write_xdata`, `read_xdata` |
+| `annotation_writer.py` | `write_room_layers` (name kept from the per-room-layer era), `OutputLayers`, `RoomOutcome` (`key`, `status`, `note`, `needs_check`) |
+| `metadata_utils.py` | `AnnotationMetadata` (`annotation_type` OUTLINE/KEY/DETAIL, optional `field`), `register_xdata_app`, `write_xdata`, `read_xdata` |
 | `build_exe.spec` | PyInstaller 6 one-folder build of the Qt app → `dist\Room Layer Tool\Room Layer Tool.exe` (no UPX, Tkinter excluded, ezdxf data bundled) |
 | `packaging/README.md` | Short install/usage guide shipped inside the ZIP (for the supervisor) |
 | `setup.bat` / `run.bat` | Source setup (venv + pip incl. PySide6) and launch |
-| `tests/` + `run_tests.bat` | 87 offline tests + `test_acad_integration.py` (opt-in) |
+| `tests/` + `run_tests.bat` | 91 offline tests + `test_acad_integration.py` (opt-in) |
 | `README.md` | Developer/user README for the source version |
 | `CLAUDE.md` | Imports this file |
 | `AutoCAD_Project_Learning_Report.docx` | 31-page learning report written 2026-09-29 (historical snapshot) |
@@ -188,14 +199,14 @@ The Tkinter `ui.py` has its **own copy** of this flow (`AppUI._run_annotation`),
 
 | Item | Value |
 |---|---|
-| Room layer | ONE layer for all rooms; name from the app (default `ROOM_KEYS`); colour 3 (green) |
-| Per matched room | closed **copy** of its polygon + **TEXT = key** inside the room, both on the room layer |
+| Layers | outlines `ROOM_OUTLINES` (colour 3 green), keys `ROOM_KEYS` (2 yellow), details `ROOM_DETAILS` (4 cyan, only created when detail columns are ticked); names from the app |
+| Per matched room | closed **copy** of its polygon (outlines) + **TEXT = key** inside the room (keys) + one **TEXT per non-empty ticked column**, stacked under the key, in column order (details) |
 | Key | `<Building>-<Floor>-<Room>` with values **exactly as in the spreadsheet** (trimmed only), e.g. `0036-1-022`, `0132-01-101` |
-| Tag size | the room label's text height, shrunk to 75%/50% if needed to fit |
-| XData | app `ROOM_INFO_AI` on copy and tag: `room_id, polygon_handle, building_id, text_handle, match_method, "room_layer"` |
+| Tag size | the room label's text height, shrunk to 75%/50% if needed to fit (key and details share one size) |
+| XData | app `ROOM_INFO_AI` on every written entity: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type` (`room_outline` / `room_key` / `room_detail`; `room_layer` in drawings from before D19) + `field` (column name, details only) |
 | Not written | blocks, attributes, rectangles; unmatched rooms; rooms without a polygon |
 | Originals | untouched (layers, polygons, labels) |
-| ArcGIS (documented, **not verified**) | Polygon + Annotation feature classes filtered to the room layer → spatial join (key annotation inside polygon) → join facilities table on the key |
+| ArcGIS (documented, **not verified**) | Polygon feature class filtered to the outlines layer + Annotation feature class filtered to the keys layer → spatial join (key annotation inside polygon) → join facilities table on the key |
 
 XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 
@@ -222,7 +233,8 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | Oct 1 `63a28a4` | **D16: all rooms on one layer** (`ROOM_KEYS`, editable), key text as-is, "Write Room Keys", Results "Key" column. |
 | Oct 1 `4dc3c21` | The AutoCAD integration test always cleans up its temp folder. |
 | by Oct 7 | The owner switched the GitHub default branch to `main`. |
-| Oct 7 | This file rewritten as a handoff; README project structure updated. |
+| Oct 7 `df4763b` | This file rewritten as a handoff; README project structure updated. |
+| Oct 7 | **D19: three layers** (outlines / keys / details) + optional detail columns picked in the app. |
 
 ---
 
@@ -247,6 +259,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | D16 | **One layer for all rooms** (default `ROOM_KEYS`, editable), outline copy + key TEXT per room; key as-is | Owner: "that's how ArcGIS reads" | owner 2026-10-01 |
 | D17 | Visible key tag inside each room (shrinks for small rooms) | The owner couldn't see anything new in the drawing | owner 2026-09-29 |
 | D18 | Filter by building before starting AutoCAD | A wrong building ID fails in <1 s | Claude, accepted |
+| D19 | **Three layers**: outline copies (`ROOM_OUTLINES`), key tags (`ROOM_KEYS`), optional details (`ROOM_DETAILS`) with values of user-ticked spreadsheet columns, one TEXT each, stacked under the key; all 3 names editable; Tk window left as is | Owner: separate outlines from tags; generic place for room name etc. Separate TEXTs (not MTEXT) because ArcGIS reads TEXT more reliably | owner 2026-10-07 |
 
 ---
 
@@ -288,7 +301,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 **Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (v2.0 — needs a v2.1 rebuild); one-layer
 ArcGIS-oriented output with visible keys; per-room results table; 87 + 2 tests; README, packaging README, learning report.
 
-**Proved on real data:** 62/62 rooms of building 0036 matched and written; conversions produce real 2018 DWGs
+**Proved on real data:** 62/62 rooms of building 0036 matched and written (also with the 3-layer output); conversions produce real 2018 DWGs
 (`AC1032`); originals untouched; XData links survive conversion; the packaged exe gives identical tag positions to source.
 
 **Not proved:** ArcGIS import/join; behaviour on the supervisor's PC; accuracy across other buildings/floors.
@@ -362,3 +375,5 @@ Unsigned exe → Windows SmartScreen "More info → Run anyway" (documented in t
 11. "Move PySide6 to GitHub" → `main` created; the owner later made it the default branch.
 12. "Separate layers or one layer?" → owner: **one layer** (D16), outline copy + key text, layer name editable.
 13. Confirmed current behaviour: one layer + a tag per room. Then: this file updated for the handoff (2026-10-07).
+14. "Most urgent first" → docs committed (`df4763b`); the v2.1 rebuild was stopped by the owner for a design change:
+    **D19** — outlines, key tags and details on separate layers; details = spreadsheet columns ticked in the app.

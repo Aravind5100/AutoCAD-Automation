@@ -21,8 +21,7 @@ from typing import Callable
 
 import pandas as pd
 
-from annotation_writer import CREATED, SKIPPED, RoomOutcome, write_room_layers
-from config import ROOM_LAYER_DEFAULT
+from annotation_writer import CREATED, SKIPPED, OutputLayers, RoomOutcome, write_room_layers
 from autocad_scanner import scan_drawing
 from polygon_matcher import associate_texts_with_polygons, match_rooms
 from utils import filter_dataframe_by_building
@@ -51,7 +50,8 @@ class RunRequest:
     building_col: str
     floor_col: str
     building_id: str                # e.g. "0036"; the user may have corrected it
-    layer: str = ROOM_LAYER_DEFAULT # the one layer that receives every room
+    layers: OutputLayers = field(default_factory=OutputLayers)   # outlines / keys / details
+    detail_cols: list[str] = field(default_factory=list)          # written on the details layer
 
 
 @dataclass
@@ -126,20 +126,21 @@ def run(
         assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons, log_fn=plain_log)
 
         checkpoint("Matching rooms to the spreadsheet...")
+        key_cols = [req.building_col, req.floor_col, req.room_col]
         summary = match_rooms(scan.room_texts, assoc, sheet, req.room_col,
-                              [req.building_col, req.floor_col, req.room_col])
+                              key_cols + [c for c in req.detail_cols if c not in key_cols])
         result.matched = summary.matched_count
         log(f"  Matched rooms: {summary.matched_count}", SUCCESS)
         if summary.matched_count == 0:
             raise RunStopped("None of the room numbers in the drawing match the spreadsheet.\n"
                              "Check the Room column.")
 
-        checkpoint(f"Writing rooms to layer {req.layer}...")
+        checkpoint("Writing the room layers...")
         outcomes: list[RoomOutcome] = []
         doc, result.created = write_room_layers(
             scan.doc, summary.results, scan.room_texts, req.building_col, req.floor_col,
             req.room_col, req.building_id, scan.existing_annotation_room_ids,
-            log_fn=plain_log, outcomes=outcomes, layer=req.layer,
+            log_fn=plain_log, outcomes=outcomes, layers=req.layers, detail_cols=req.detail_cols,
         )
         result.rows = _result_rows(outcomes, summary)
 
@@ -152,8 +153,7 @@ def run(
     finally:
         remove_work_dir(work_dir)
 
-    log(f"Done -- {result.created} rooms written to layer {req.layer}. "
-        f"Saved to {req.output_path}", SUCCESS)
+    log(f"Done -- {result.created} rooms written. Saved to {req.output_path}", SUCCESS)
     return result
 
 
@@ -166,6 +166,6 @@ def _result_rows(outcomes: list[RoomOutcome], summary) -> list[ResultRow]:
     return rows
 
 
-__all__ = ["run", "RunRequest", "RunResult", "ResultRow", "RunCancelled", "RunStopped",
+__all__ = ["run", "RunRequest", "OutputLayers", "RunResult", "ResultRow", "RunCancelled", "RunStopped",
            "CREATED", "SKIPPED", "NOT_IN_SHEET", "NOT_IN_DRAWING",
            "INFO", "SUCCESS", "WARN", "ERROR"]

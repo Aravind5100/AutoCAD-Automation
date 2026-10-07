@@ -76,16 +76,49 @@ class TestSetup(QtTestCase):
         self.assertFalse(self.win.run_btn.isEnabled())
         self.assertIn("three different columns", self.win.run_btn.toolTip())
 
-    def test_room_layer_box_validated_and_remembered(self):
+    def test_layer_boxes_validated_and_remembered(self):
         self.ready_window()
-        self.assertEqual(self.win.layer_edit.text(), "ROOM_KEYS")
-        self.win.layer_edit.setText("BAD:NAME")
+        self.assertEqual(self.win.layer_names(), {"outlines": "ROOM_OUTLINES", "keys": "ROOM_KEYS",
+                                                  "details": "ROOM_DETAILS"})
+        edits = self.win.layer_edits
+        edits["keys"].setText("BAD:NAME")
         self.assertFalse(self.win.run_btn.isEnabled())
-        self.assertIn("Room layer", self.win.run_btn.toolTip())
-        self.win.layer_edit.setText("A-AREA-KEYS")
+        self.assertIn("Keys layer", self.win.run_btn.toolTip())
+        edits["keys"].setText("room_outlines")                    # same as outlines (any case)
+        self.assertIn("different names", self.win.run_btn.toolTip())
+        edits["keys"].setText("A-AREA-KEYS")
+        edits["details"].setText("")                              # unused: no details picked
+        self.assertTrue(self.win.run_btn.isEnabled())
+        self.win.set_detail_columns(["Department"])
+        self.assertIn("Details layer", self.win.run_btn.toolTip())
+        edits["details"].setText("A-AREA-INFO")
         self.assertTrue(self.win.run_btn.isEnabled())
         self.win.start_run(self.path("out.dxf"), wait=True)
-        self.assertEqual(self.win.settings.value("layer_name"), "A-AREA-KEYS")
+        self.assertEqual(self.win.settings.value("layer_keys"), "A-AREA-KEYS")
+        self.assertEqual(self.win.settings.value("layer_details"), "A-AREA-INFO")
+
+    def test_detail_columns_listed_and_remembered(self):
+        self.ready_window()
+        combo = self.win.detail_combo
+        self.assertEqual(combo.items(), ["Building ID", "Floor", "Room Number", "Department"])
+        self.assertEqual(self.win.detail_columns(), [])
+        self.assertIn("None", combo.summary())
+        self.win.set_detail_columns(["Department", "Floor"])
+        self.assertEqual(self.win.detail_columns(), ["Floor", "Department"])   # sheet order
+        self.assertEqual(combo.summary(), "Floor, Department")
+        box = next(b for b in combo.boxes() if b.text() == "Department")
+        box.click()                                       # a click on a checkbox ticks it
+        self.assertEqual(self.win.detail_columns(), ["Floor"])
+        box.click()
+        self.assertEqual(self.win.detail_columns(), ["Floor", "Department"])
+        self.assertEqual(combo.text(), "Floor, Department")
+        self.win.set_detail_columns(["Department"])
+        self.win.start_run(self.path("out.dxf"), wait=True)
+        self.assertEqual(self.win.result.created, 3)
+        win2 = qt_ui.MainWindow(self.settings)                   # next session
+        win2.load_sheet(self.path("rooms.csv"), wait=True)
+        self.assertEqual(win2.detail_columns(), ["Department"])
+        win2.deleteLater()
 
     def test_theme_toggle_is_remembered(self):
         start = self.win.theme

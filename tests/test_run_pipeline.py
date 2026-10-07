@@ -40,11 +40,14 @@ class TestPipelineRun(TempDirTestCase):
         self.assertEqual(len(steps), 6)                   # DXF input: no AutoCAD steps
         self.assertFalse([m for lvl, m in logs if lvl == pipeline.ERROR])
 
-    def test_layer_from_request(self):
+    def test_layers_and_details_from_request(self):
         import ezdxf
-        from tests.helpers import tool_layers
-        pipeline.run(self.request(layer="0132-ROOMS"))
-        self.assertEqual(tool_layers(ezdxf.readfile(self.path("out.dxf"))), {"0132-ROOMS"})
+        from tests.helpers import detail_labels, tool_layers
+        layers = pipeline.OutputLayers(outlines="0132-ROOMS", keys="0132-KEYS", details="0132-INFO")
+        pipeline.run(self.request(layers=layers, detail_cols=["Department"]))
+        out = ezdxf.readfile(self.path("out.dxf"))
+        self.assertEqual(tool_layers(out), {"0132-ROOMS", "0132-KEYS", "0132-INFO"})
+        self.assertEqual(detail_labels(out)["102"][0].dxf.text, "Admin")
 
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):

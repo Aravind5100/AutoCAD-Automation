@@ -2,9 +2,10 @@
 
 A Python desktop application that reads room data from a spreadsheet (CSV/Excel),
 scans an AutoCAD DWG drawing for room identifiers and polygons, matches them,
-and writes every matched room onto **one ArcGIS-ready layer** (default `ROOM_KEYS`): a copy of
-the room's outline plus a text label with its key `[Building]-[Floor]-[Room]` (e.g.
-`0132-01-101`) — without overwriting the original file.
+and writes every matched room onto **three ArcGIS-ready layers**: a copy of the room's outline
+(`ROOM_OUTLINES`), a text label with its key `[Building]-[Floor]-[Room]` (e.g. `0132-01-101`,
+`ROOM_KEYS`) and, optionally, other spreadsheet values such as the room name (`ROOM_DETAILS`)
+— without overwriting the original file.
 
 ---
 
@@ -160,8 +161,20 @@ Identifier", "Building Identifier", "Floor Code"); change them in the drop-downs
 They must be three different columns. The green preview shows a real room key for the
 building you are processing, e.g. `e.g.  0036-1-001`.
 
-**Room layer** is the one layer that receives every room (default `ROOM_KEYS`; your last
-choice is remembered). Layer names cannot contain `< > / \ " : ; ? * | = `` ` ``.
+Three **layer** boxes name the layers the tool writes (your last choice is remembered):
+
+| Box | Default | Holds |
+|---|---|---|
+| Outlines layer | `ROOM_OUTLINES` | a copy of every matched room's outline |
+| Keys layer | `ROOM_KEYS` | the `Building-Floor-Room` key text inside every room |
+| Details layer | `ROOM_DETAILS` | the values of the columns ticked in **Room details** (only used when some are ticked) |
+
+The names must differ, and cannot contain `< > / \ " : ; ? * | = `` ` ``.
+
+**Room details (optional):** a drop-down listing every spreadsheet column — tick as many as you
+like (e.g. *Room Name*, *Department Name*; the list stays open while you tick) to write their
+values into each room, one text line per column, under the key. Empty values are left out.
+Nothing is ticked by default; the ticked columns are remembered.
 
 ### 3. Write Room Keys
 
@@ -176,8 +189,8 @@ The progress bar and status line follow each step:
 3. Scan the drawing for room labels and room outlines
 4. Link each label to its room outline
 5. Match rooms to the spreadsheet
-6. Put a copy of each matched room's outline and its key text (inside the room) on the
-   room layer
+6. Put a copy of each matched room's outline on the outlines layer, its key text (inside the
+   room) on the keys layer, and the ticked detail values (under the key) on the details layer
 7. Convert back to DWG and save it where you chose
 
 **Cancel** stops the run after the current step; nothing is saved.
@@ -223,7 +236,7 @@ DWG File (input)
 [Match rooms to spreadsheet]  -- Room IDs matched case-insensitively
   |
   v
-[ezdxf: Room layer]          -- Outline copies + key texts on one layer (ROOM_KEYS)
+[ezdxf: Room layers]         -- Outline copies, key texts, detail texts on 3 layers
   |
   v
 [AutoCAD COM: SaveAs DWG]     -- AutoCAD converts back to DWG format
@@ -288,7 +301,7 @@ The spreadsheet is filtered to only rows matching this building ID before matchi
 
 | File | Description |
 |---|---|
-| `<name>_annotated.dwg` (name and folder are your choice) | The original drawing plus the room layer (outline copy + key text per matched room), saved as a native AutoCAD 2018 DWG. |
+| `<name>_annotated.dwg` (name and folder are your choice) | The original drawing plus the room layers (outline copy, key text and any detail texts per matched room), saved as a native AutoCAD 2018 DWG. |
 
 The original DWG is **never modified**, and nothing is written next to it:
 
@@ -307,11 +320,14 @@ are skipped (the log reports how many).
 
 ## ArcGIS Compatibility
 
-All matched rooms go on **one layer** (default `ROOM_KEYS`, set in the app). For each room
-the layer holds:
+Every matched room is written on three layers (names set in the app):
 
-- a **copy** of the room's boundary polygon, and
-- a **text label with the room key** inside the room:
+- **outlines layer** (`ROOM_OUTLINES`): a **copy** of the room's boundary polygon;
+- **keys layer** (`ROOM_KEYS`): a **text label with the room key** inside the room;
+- **details layer** (`ROOM_DETAILS`, only if detail columns are ticked): one text label per
+  ticked column (e.g. the room name), stacked under the key.
+
+The key is:
 
 ```
 <Building>-<Floor>-<Room>        e.g.  0132-01-101
@@ -324,8 +340,10 @@ the layer holds:
 
 ### How to Use It in ArcGIS
 
-1. **Add Data** → the annotated `.dwg` file. Use its **Polygon** and **Annotation** feature
-   classes, both limited to the room layer (e.g. a definition query `Layer = 'ROOM_KEYS'`).
+1. **Add Data** → the annotated `.dwg` file. Use its **Polygon** feature class limited to the
+   outlines layer (definition query `Layer = 'ROOM_OUTLINES'`) and its **Annotation** feature
+   class limited to the keys layer (`Layer = 'ROOM_KEYS'`). The details layer
+   (`Layer = 'ROOM_DETAILS'`) is for display/labelling and is not needed for the join.
 2. **Spatial join**: join the key annotations to the room polygons that contain them, so
    each polygon gets its key.
 3. To bring in other spreadsheet columns (department, occupant, area, ...), **join** your
@@ -364,10 +382,12 @@ All tuneable values are in `config.py`. You can edit this file with any text edi
 
 | Constant | Default | Description |
 |---|---|---|
-| `ROOM_LAYER_DEFAULT` | `ROOM_KEYS` | Default name of the one room layer (editable in the app) |
+| `ROOM_OUTLINE_LAYER_DEFAULT` | `ROOM_OUTLINES` | Default outlines layer (editable in the app) |
+| `ROOM_KEY_LAYER_DEFAULT` | `ROOM_KEYS` | Default keys layer (editable in the app) |
+| `ROOM_DETAIL_LAYER_DEFAULT` | `ROOM_DETAILS` | Default details layer (editable in the app) |
 | `ROOM_KEY_SEPARATOR` | `-` | Separator between Building, Floor and Room in the key |
-| `ROOM_LAYER_COLOR` | `3` | AutoCAD color index of the room layer (3 = green) |
-| `ROOM_TAG_GAP_FACTOR` | `0.5` | Gap between the room label and the key label, in label heights |
+| `ROOM_OUTLINE_LAYER_COLOR` / `ROOM_KEY_LAYER_COLOR` / `ROOM_DETAIL_LAYER_COLOR` | `3` / `2` / `4` | AutoCAD color index of each layer (green / yellow / cyan) |
+| `ROOM_TAG_GAP_FACTOR` | `0.5` | Gap between the room label, the key and each detail line, in label heights |
 
 ### Polygon Detection
 
@@ -478,7 +498,7 @@ AutoCAD-Annotator/
   setup.bat                 # One-time setup script (creates venv, installs deps)
   run.bat                   # Launch script (starts the GUI application)
   main.py                   # Entry point - Qt window (--tk: old Tkinter window, --selftest)
-  qt_ui.py                  # PySide6 window (files, columns, room layer, results table, log)
+  qt_ui.py                  # PySide6 window (files, columns, layers, details, results, log)
   pipeline.py               # The processing steps, independent of the window
   selftest.py               # --selftest: checks the app works on this computer
   ui.py                     # Previous Tkinter window (kept for comparison)
@@ -486,7 +506,7 @@ AutoCAD-Annotator/
   dwg_converter.py          # DWG <-> DXF conversion via AutoCAD COM (minimal)
   autocad_scanner.py        # Scans DXF for room texts, polygons, existing room keys
   polygon_matcher.py        # Associates room text with room polygons + spreadsheet
-  annotation_writer.py      # Writes outline copies + key texts onto the room layer
+  annotation_writer.py      # Writes outline copies, key texts and detail texts (3 layers)
   metadata_utils.py         # XData linking each copy to its source polygon
   spreadsheet_loader.py     # CSV / XLS / XLSX file loading
   utils.py                  # Normalization, heuristics, geometry helpers

@@ -1,14 +1,15 @@
 """
 test_pipeline.py
 ----------------
-End-to-end offline runs: spreadsheet + DXF → DXF with room keys on one layer (no AutoCAD).
+End-to-end offline runs: spreadsheet + DXF → DXF with room outlines, keys and
+details on their own layers (no AutoCAD).
 """
 
 import unittest
 
 import ezdxf
 
-from annotation_writer import write_room_layers
+from annotation_writer import OutputLayers, write_room_layers
 from autocad_scanner import scan_drawing
 from metadata_utils import read_xdata
 from tests.helpers import (
@@ -16,6 +17,7 @@ from tests.helpers import (
     ROOMS_CSV,
     TempDirTestCase,
     make_plan,
+    detail_labels,
     room_key_labels,
     room_key_polygons,
     run_pipeline,
@@ -31,13 +33,14 @@ class TestRoomKeys(TempDirTestCase):
         self.plan = make_plan(self.path("0132_TEST.dxf"))
         self.sheet = self.write_text("rooms.csv", ROOMS_CSV)
 
-    def _run_and_save(self, drawing, name, sheet=None, log=None):
-        scan, summary, doc, created = run_pipeline(drawing, sheet or self.sheet, log=log)
+    def _run_and_save(self, drawing, name, sheet=None, log=None, detail_cols=()):
+        scan, summary, doc, created = run_pipeline(drawing, sheet or self.sheet, log=log,
+                                                   detail_cols=detail_cols)
         out = self.path(name)
         doc.saveas(out)
         return scan, summary, created, ezdxf.readfile(out)
 
-    def test_all_rooms_on_one_layer_with_building_floor_room_keys(self):
+    def test_outlines_and_keys_on_their_own_layers(self):
         _, summary, created, out = self._run_and_save(self.plan, "out.dxf")
         self.assertEqual(created, 3)
         self.assertEqual(summary.unmatched_drawing, [])
@@ -45,18 +48,20 @@ class TestRoomKeys(TempDirTestCase):
         # values as-is from the spreadsheet: floor "01" and "1" are kept as written,
         # and building 9999's row for room 101 is not used
         self.assertEqual(set(layers), set(EXPECTED_KEYS))
-        self.assertEqual(tool_layers(out), {"ROOM_KEYS"})          # one layer for every room
-        self.assertIn("ROOM_KEYS", out.layers)
+        self.assertEqual(tool_layers(out), {"ROOM_OUTLINES", "ROOM_KEYS"})
+        self.assertNotIn("ROOM_DETAILS", out.layers)               # no detail columns picked
         for name in EXPECTED_KEYS:
             self.assertNotIn(name, out.layers)                      # no per-room layers
         for name, room in EXPECTED_KEYS.items():
             [poly] = layers[name]
+            self.assertEqual(poly.dxf.layer, "ROOM_OUTLINES")
+            self.assertEqual(room_key_labels(out)[name][0].dxf.layer, "ROOM_KEYS")
             self.assertEqual(poly.dxftype(), "LWPOLYLINE")
             self.assertTrue(poly.closed)
             self.assertAlmostEqual(polygon_area(list(poly.get_points(format="xy"))), 10000.0)
             meta = read_xdata(poly)
             self.assertEqual((meta.room_id, meta.building_id, meta.match_method,
-                              meta.annotation_type), (room, "0132", "contains", "room_layer"))
+                              meta.annotation_type), (room, "0132", "contains", "room_outline"))
 
     def test_no_blocks_and_originals_untouched(self):
         original = ezdxf.readfile(self.plan)
@@ -174,7 +179,65 @@ class TestRoomKeys(TempDirTestCase):
         self.assertEqual(set(layers), set(EXPECTED_KEYS))
         self.assertEqual({p[0].dxftype() for p in layers.values()}, {"POLYLINE"})
 
-    def test_custom_layer_name(self):
+    def test_detail_columns_on_details_layer_under_the_key(self):
+        scan, _, created, out = self._run_and_save(self.plan, "out.dxf",
+                                                   detail_cols=["Department", "Floor"])
+        self.assertEqual(created, 3)
+        self.assertEqual(tool_layers(out), {"ROOM_OUTLINES", "ROOM_KEYS", "ROOM_DETAILS"})
+        details = detail_labels(out)
+        keys = {read_xdata(t[0]).room_id: t[0] for t in room_key_labels(out).values()}
+        expected = {"101": ["Eng", "01"], "102": ["Admin", "01"], "103": ["Lab", "1"]}
+        for room, values in expected.items():
+            texts = details[room]
+            self.assertEqual([t.dxf.text for t in texts], values)       # in column order
+            self.assertEqual([read_xdata(t).field for t in texts], ["Department", "Floor"])
+            self.assertEqual({t.dxf.layer for t in texts}, {"ROOM_DETAILS"})
+            key = keys[room]
+            self.assertLess(texts[0].dxf.insert.y, key.dxf.insert.y)     # under the key
+            self.assertAlmostEqual(texts[0].dxf.insert.x, key.dxf.insert.x)
+        # detail labels are not mistaken for room labels on a re-run
+        scan2, _, created2, out2 = self._run_and_save(self.path("out.dxf"), "out2.dxf",
+                                                      detail_cols=["Department"])
+        self.assertEqual((len(scan2.room_texts), created2), (3, 0))
+        self.assertEqual(sum(len(t) for t in detail_labels(out2).values()), 6)
+
+    def test_empty_detail_value_left_out(self):
+        sheet = self.write_text("s.csv", "Building ID,Floor,Room Number,Room Name\n"
+                                         "0132,01,101,Office\n0132,01,102,\n0132,1,103,Lab\n")
+        _, _, created, out = self._run_and_save(self.plan, "o.dxf", sheet=sheet,
+                                                detail_cols=["Room Name"])
+        self.assertEqual(created, 3)
+        self.assertEqual({r: [t.dxf.text for t in ts] for r, ts in detail_labels(out).items()},
+                         {"101": ["Office"], "103": ["Lab"]})
+
+    def test_details_that_do_not_fit_flag_the_room(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        room = [(0, 0), (60, 0), (60, 12), (0, 12)]        # room for the key, not 3 more lines
+        msp.add_lwpolyline(room, close=True)
+        msp.add_text("101", dxfattribs={"insert": (3, 7), "height": 4})
+        doc.saveas(self.path("0132_SM.dxf"))
+        sheet = self.write_text("s.csv", "Building ID,Floor,Room Number,A,B,C\n"
+                                         "0132,01,101,Alpha,Bravo,Charlie\n")
+        outcomes = []
+        from polygon_matcher import associate_texts_with_polygons, match_rooms
+        from spreadsheet_loader import load_spreadsheet
+        scan = scan_drawing(self.path("0132_SM.dxf"))
+        assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons)
+        cols = ["Building ID", "Floor", "Room Number"]
+        summary = match_rooms(scan.room_texts, assoc, load_spreadsheet(sheet), "Room Number",
+                              cols + ["A", "B", "C"])
+        doc, created = write_room_layers(scan.doc, summary.results, scan.room_texts, *cols,
+                                         "0132", set(), outcomes=outcomes,
+                                         detail_cols=["A", "B", "C"])
+        [o] = outcomes
+        self.assertEqual(created, 1)
+        self.assertTrue(o.needs_check)
+        self.assertIn("detail labels do not fit", o.note)
+        [key] = room_key_labels(doc)["0132-01-101"]
+        self.assertTrue(point_in_polygon(key.dxf.insert.x, key.dxf.insert.y, room))  # key still placed well
+
+    def test_custom_layer_names(self):
         from polygon_matcher import associate_texts_with_polygons, match_rooms
         from spreadsheet_loader import load_spreadsheet
         cols = ["Building ID", "Floor", "Room Number"]
@@ -182,11 +245,13 @@ class TestRoomKeys(TempDirTestCase):
         assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons)
         summary = match_rooms(scan.room_texts, assoc, load_spreadsheet(self.sheet),
                               "Room Number", cols)
+        layers = OutputLayers(outlines="A-AREA-ROOMS", keys="A-AREA-KEYS", details="A-AREA-INFO")
         doc, created = write_room_layers(scan.doc, summary.results, scan.room_texts, *cols,
-                                         "0132", set(), layer="A-AREA-KEYS")
+                                         "0132", set(), layers=layers)
         self.assertEqual(created, 3)
-        self.assertEqual(tool_layers(doc), {"A-AREA-KEYS"})
+        self.assertEqual(tool_layers(doc), {"A-AREA-ROOMS", "A-AREA-KEYS"})
         self.assertNotIn("ROOM_KEYS", doc.layers)
+        self.assertNotIn("ROOM_OUTLINES", doc.layers)
 
     def test_nothing_to_write_returns_drawing(self):
         scan = scan_drawing(self.plan)

@@ -18,7 +18,7 @@ from tkinter import filedialog, messagebox, ttk
 import pythoncom
 
 from config import OUTPUT_SUFFIX
-from config import ROOM_KEY_SEPARATOR, ROOM_LAYER_DEFAULT
+from config import ROOM_KEY_LAYER_DEFAULT, ROOM_KEY_SEPARATOR, ROOM_OUTLINE_LAYER_DEFAULT
 from utils import (
     detect_building_column,
     detect_floor_column,
@@ -160,8 +160,8 @@ class AppUI:
         sep = ROOM_KEY_SEPARATOR
         tk.Label(
             card,
-            text=(f"Each matched room gets an outline copy and a key text on layer "
-                  f"{ROOM_LAYER_DEFAULT}\n"
+            text=(f"Each matched room gets an outline copy on layer {ROOM_OUTLINE_LAYER_DEFAULT} "
+                  f"and a key text on layer {ROOM_KEY_LAYER_DEFAULT}\n"
                   f"key = [Building]{sep}[Floor]{sep}[Room]   e.g.  0132{sep}01{sep}101"),
             bg=BG_CARD, fg=FG_SECONDARY, font=("Segoe UI", 9), justify=tk.LEFT,
         ).pack(anchor="w", pady=(4, 0))
@@ -613,7 +613,7 @@ class AppUI:
 
             # --- Phase 5: Write room layers to in-memory DXF ---
             self._set_status("Writing room keys...")
-            self._log(f"Writing room outlines and keys to layer {ROOM_LAYER_DEFAULT}...", tag="INFO")
+            self._log(f"Writing room outlines ({ROOM_OUTLINE_LAYER_DEFAULT}) and keys ({ROOM_KEY_LAYER_DEFAULT})", tag="INFO")
             annotated_dxf_doc, inserted = write_room_layers(
                 scan.doc,               # reuse the drawing the scanner already read
                 summary.results,
@@ -674,7 +674,7 @@ class AppUI:
                 f"Building        : {building_id}\n"
                 f"Polygon links   : {summary.texts_with_polygon}\n"
                 f"Matched rooms   : {summary.matched_count}\n"
-                f"Rooms written   : {inserted} (layer {ROOM_LAYER_DEFAULT})\n"
+                f"Rooms written   : {inserted} (layers {ROOM_OUTLINE_LAYER_DEFAULT}, {ROOM_KEY_LAYER_DEFAULT})\n"
                 f"Output saved to :\n{output_path}",
             )
 

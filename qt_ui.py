@@ -4,7 +4,8 @@ qt_ui.py
 PySide6 (Qt) desktop window for the Room Layer tool.
 
     1  Files     spreadsheet, drawing, editable Building ID
-    2  Output    Room / Building / Floor columns, key preview, the room layer name
+    2  Output    Room / Building / Floor columns, key preview, the 3 output layer names,
+                 room details (multi-select drop-down of spreadsheet columns, optional)
     Run          Write Room Keys / Cancel, step progress
     Results      one row per room (created / needs check / skipped / not matched)
     Log          full colour-coded log
@@ -25,6 +26,7 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -34,6 +36,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -44,9 +47,16 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
-from config import OUTPUT_SUFFIX, ROOM_KEY_SEPARATOR, ROOM_LAYER_DEFAULT
+from config import (
+    OUTPUT_SUFFIX,
+    ROOM_DETAIL_LAYER_DEFAULT,
+    ROOM_KEY_LAYER_DEFAULT,
+    ROOM_KEY_SEPARATOR,
+    ROOM_OUTLINE_LAYER_DEFAULT,
+)
 from utils import (
     build_room_key,
     detect_building_column,
@@ -62,22 +72,26 @@ APP_NAME = "Room Layer Tool"
 # Themes
 # ---------------------------------------------------------------------------
 
+# Palette: colorhunt.co/palette/fef5edd3e4cdadc2a999a799
+#   #FEF5ED cream · #D3E4CD pale green · #ADC2A9 sage · #99A799 grey-green
+# All four are light, so text on them is dark, and titles / selected tabs use a
+# deeper shade of the sage (accent_text). Green / amber / red are only for statuses.
 THEMES = {
-    "light": dict(bg="#f5f6f8", card="#ffffff", text="#1f2328", muted="#5f6b7a",
-                  border="#d8dee4", input="#ffffff", alt="#f6f8fa", accent="#2563eb",
-                  accent_hover="#1d4ed8", on_accent="#ffffff", success="#1a7f37",
-                  warn="#9a6700", error="#cf222e", info="#0969da"),
-    "dark": dict(bg="#1e1e2e", card="#27273a", text="#e6e6f0", muted="#a6adc8",
-                 border="#3b3b52", input="#313145", alt="#2c2c40", accent="#89b4fa",
-                 accent_hover="#a6c8ff", on_accent="#1e1e2e", success="#a6e3a1",
-                 warn="#f9c97c", error="#f38ba8", info="#89dceb"),
+    "light": dict(bg="#fef5ed", card="#fffbf7", text="#1f261f", muted="#5e6b5e",
+                  border="#adc2a9", input="#ffffff", alt="#f1f6ee", accent="#99a799",
+                  accent_hover="#adc2a9", accent_text="#4f5f4f", on_accent="#1f261f",
+                  success="#2e7d32", warn="#9a6700", error="#b3261e", info="#4f6f8f"),
+    "dark": dict(bg="#1c211c", card="#252b25", text="#fef5ed", muted="#adc2a9",
+                 border="#3b463b", input="#2d342d", alt="#293029", accent="#adc2a9",
+                 accent_hover="#d3e4cd", accent_text="#d3e4cd", on_accent="#1c211c",
+                 success="#a6d9a0", warn="#e8c27a", error="#f2a0a0", info="#a9c4e0"),
 }
 
 _QSS = """
 QWidget {{ background: {bg}; color: {text}; font-size: 10.5pt; }}
 QGroupBox {{ background: {card}; border: 1px solid {border}; border-radius: 8px;
             margin-top: 14px; padding: 14px 12px 10px 12px; font-weight: 600; }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {accent}; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {accent_text}; }}
 QGroupBox QLabel {{ background: transparent; }}
 QLabel#title {{ font-size: 16pt; font-weight: 700; }}
 QLabel#muted, QLabel#hint {{ color: {muted}; }}
@@ -87,9 +101,17 @@ QLineEdit, QComboBox, QPlainTextEdit, QTableWidget {{
 QLineEdit:read-only {{ color: {muted}; }}
 QComboBox QAbstractItemView {{ background: {input}; selection-background-color: {accent};
                               selection-color: {on_accent}; }}
+QPushButton#dropdown {{ background: {input}; text-align: left; padding: 5px 10px 5px 10px; }}
+QPushButton#dropdown::menu-indicator {{ subcontrol-position: right center; right: 8px; }}
+QMenu#dropdownMenu {{ background: {input}; border: 1px solid {border}; padding: 4px; menu-scrollable: 1; }}
+QMenu#dropdownMenu QCheckBox {{ background: transparent; padding: 3px 10px; }}
+QMenu#dropdownMenu QCheckBox:hover {{ background: {alt}; }}
+QCheckBox::indicator {{ width: 13px; height: 13px; border: 1px solid {muted}; border-radius: 3px;
+                       background: {input}; }}
+QCheckBox::indicator:checked {{ background: {accent}; border-color: {accent_text}; }}
 QPushButton, QToolButton {{ background: {card}; border: 1px solid {border}; border-radius: 5px;
                             padding: 5px 14px; }}
-QPushButton:hover, QToolButton:hover {{ border-color: {accent}; }}
+QPushButton:hover, QToolButton:hover {{ border-color: {accent_text}; }}
 QPushButton:disabled {{ color: {muted}; }}
 QPushButton#primary {{ background: {accent}; color: {on_accent}; border: none; font-weight: 700;
                       padding: 8px 22px; }}
@@ -101,7 +123,7 @@ QProgressBar::chunk {{ background: {accent}; border-radius: 4px; }}
 QTabWidget::pane {{ border: 1px solid {border}; border-radius: 6px; background: {card}; }}
 QTabBar::tab {{ background: {bg}; padding: 6px 16px; border: 1px solid {border};
                border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; }}
-QTabBar::tab:selected {{ background: {card}; color: {accent}; font-weight: 600; }}
+QTabBar::tab:selected {{ background: {card}; color: {accent_text}; font-weight: 600; }}
 QTableWidget {{ alternate-background-color: {alt}; gridline-color: {border}; }}
 QHeaderView::section {{ background: {alt}; border: none; border-bottom: 1px solid {border};
                        padding: 5px; font-weight: 600; }}
@@ -115,6 +137,13 @@ def stylesheet(theme: str) -> str:
 # ---------------------------------------------------------------------------
 # Results table: status → label and colour
 # ---------------------------------------------------------------------------
+
+# The three output layers: (attribute suffix, label, default name, hint)
+LAYER_FIELDS = (
+    ("outlines", "Outlines layer", ROOM_OUTLINE_LAYER_DEFAULT, "a copy of every room's outline"),
+    ("keys", "Keys layer", ROOM_KEY_LAYER_DEFAULT, "the Building-Floor-Room key inside every room"),
+    ("details", "Details layer", ROOM_DETAIL_LAYER_DEFAULT, "the Room details values, under the key"),
+)
 
 FILTERS = ["All rooms", "Created", "Needs check", "Skipped / failed", "Not matched"]
 
@@ -161,6 +190,72 @@ def check_output_path(input_path: str, chosen: str) -> tuple[str | None, str | N
     if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(input_path)):
         return None, "The original drawing cannot be overwritten.\nChoose another name or folder."
     return path, None
+
+
+# ---------------------------------------------------------------------------
+# Multi-select drop-down
+# ---------------------------------------------------------------------------
+
+class MultiSelectDropdown(QPushButton):
+    """Drop-down button with a menu of checkboxes; several can be ticked.
+
+    The menu stays open while boxes are ticked (click outside or press Esc to
+    close it), and the button shows the ticked items, or *placeholder* when
+    none is ticked.
+    """
+    changed = Signal()
+
+    def __init__(self, placeholder: str = ""):
+        super().__init__()
+        self.placeholder = placeholder
+        self.setObjectName("dropdown")
+        self.menu_ = QMenu(self)
+        self.menu_.setObjectName("dropdownMenu")
+        self.setMenu(self.menu_)
+        self._boxes: list[QCheckBox] = []
+        self.set_items([])
+
+    def set_items(self, texts: list[str], checked=()):
+        self.menu_.clear()
+        self._boxes = []
+        for text in texts:
+            box = QCheckBox(text)
+            box.setChecked(text in checked)
+            box.toggled.connect(self._refresh)
+            action = QWidgetAction(self.menu_)
+            action.setDefaultWidget(box)
+            self.menu_.addAction(action)
+            self._boxes.append(box)
+        if not texts:
+            self.menu_.addAction("Load a spreadsheet first (step 1)").setEnabled(False)
+        self._refresh()
+
+    def items(self) -> list[str]:
+        return [b.text() for b in self._boxes]
+
+    def checked_items(self) -> list[str]:
+        """Ticked items, in list order."""
+        return [b.text() for b in self._boxes if b.isChecked()]
+
+    def set_checked_items(self, texts):
+        for box in self._boxes:
+            box.setChecked(box.text() in texts)
+
+    def boxes(self) -> list[QCheckBox]:
+        return list(self._boxes)
+
+    def summary(self) -> str:
+        return ", ".join(self.checked_items()) or self.placeholder
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh()
+
+    def _refresh(self, *_):
+        text = self.summary()
+        self.setToolTip(text)
+        self.setText(self.fontMetrics().elidedText(text, Qt.ElideRight, max(self.width() - 36, 40)))
+        self.changed.emit()
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +349,8 @@ class MainWindow(QMainWindow):
         self.result = None
 
         self.setWindowTitle(APP_NAME)
-        self.resize(1000, 820)
-        self.setMinimumSize(820, 640)
+        self.resize(1000, 860)
+        self.setMinimumSize(820, 680)
         self._build()
         self._apply_theme()
         self._update_state()
@@ -272,7 +367,8 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title = QLabel(APP_NAME)
         title.setObjectName("title")
-        subtitle = QLabel("Spreadsheet rooms → Building-Floor-Room keys on one layer for ArcGIS")
+        subtitle = QLabel("Spreadsheet rooms → outlines, Building-Floor-Room keys and details "
+                          "on their own layers for ArcGIS")
         subtitle.setObjectName("muted")
         self.theme_btn = QToolButton()
         self.theme_btn.clicked.connect(self._toggle_theme)
@@ -316,17 +412,32 @@ class MainWindow(QMainWindow):
         self.preview = QLabel()
         self.preview.setObjectName("preview")
         cgrid.addWidget(self.preview, 1, 3, 1, 3)
-        cgrid.addWidget(QLabel("Room layer"), 2, 0)
-        self.layer_edit = QLineEdit(self.settings.value("layer_name", "") or ROOM_LAYER_DEFAULT)
-        self.layer_edit.setFixedWidth(220)
-        self.layer_edit.textChanged.connect(self._update_state)
-        layer_hint = QLabel("every room's outline copy and key text go on this one layer")
-        layer_hint.setObjectName("hint")
-        layer_row = QHBoxLayout()
-        layer_row.addWidget(self.layer_edit)
-        layer_row.addWidget(layer_hint)
-        layer_row.addStretch()
-        cgrid.addLayout(layer_row, 2, 1, 1, 5)
+        self.layer_edits: dict[str, QLineEdit] = {}
+        for r, (name, label, default, hint_text) in enumerate(LAYER_FIELDS, start=2):
+            cgrid.addWidget(QLabel(label), r, 0)
+            edit = QLineEdit(self.settings.value(f"layer_{name}", "") or default)
+            edit.setFixedWidth(220)
+            edit.textChanged.connect(self._update_state)
+            hint = QLabel(hint_text)
+            hint.setObjectName("hint")
+            row = QHBoxLayout()
+            row.addWidget(edit)
+            row.addWidget(hint)
+            row.addStretch()
+            cgrid.addLayout(row, r, 1, 1, 5)
+            self.layer_edits[name] = edit
+        r = 2 + len(LAYER_FIELDS)
+        cgrid.addWidget(QLabel("Room details"), r, 0)
+        self.detail_combo = MultiSelectDropdown("None — click to tick columns (optional)")
+        self.detail_combo.setFixedWidth(360)
+        self.detail_combo.changed.connect(self._update_state)
+        detail_hint = QLabel("e.g. Room Name — written under the key on the details layer")
+        detail_hint.setObjectName("hint")
+        row = QHBoxLayout()
+        row.addWidget(self.detail_combo)
+        row.addWidget(detail_hint)
+        row.addStretch()
+        cgrid.addLayout(row, r, 1, 1, 5)
         outer.addWidget(cols)
 
         # Run row
@@ -469,6 +580,8 @@ class MainWindow(QMainWindow):
             combo.addItems(columns)
             combo.setCurrentIndex(columns.index(guess) if guess in columns else -1)
             combo.blockSignals(False)
+        # one entry per column; re-tick the columns used last time
+        self.detail_combo.set_items(columns, self.settings.value("detail_cols", [], type=list) or [])
         missing = [n for n, (_, g) in zip(("Room", "Building", "Floor"), guesses) if g is None]
         if missing:
             self.log(f"Please choose the {', '.join(missing)} column(s) in step 2.", "WARN")
@@ -484,6 +597,16 @@ class MainWindow(QMainWindow):
         self._update_state()
 
     # ----------------------------------------------------------- columns
+    def detail_columns(self) -> list[str]:
+        """Ticked detail columns, in spreadsheet order."""
+        return self.detail_combo.checked_items()
+
+    def set_detail_columns(self, columns: list[str]):
+        self.detail_combo.set_checked_items(columns)
+
+    def layer_names(self) -> dict[str, str]:
+        return {name: edit.text().strip() for name, edit in self.layer_edits.items()}
+
     def columns(self) -> tuple[str, str, str]:
         return (self.room_combo.currentText(), self.building_combo.currentText(),
                 self.floor_combo.currentText())
@@ -520,9 +643,14 @@ class MainWindow(QMainWindow):
             return "Room, Building and Floor must be three different columns."
         if not self.building_edit.text().strip():
             return "Enter the Building ID."
-        problem = layer_name_problem(self.layer_edit.text())
-        if problem:
-            return f"Room layer: {problem}"
+        layers = self.layer_names()
+        used = ["outlines", "keys"] + (["details"] if self.detail_columns() else [])
+        for name, label, _, _ in LAYER_FIELDS:
+            problem = layer_name_problem(layers[name]) if name in used else None
+            if problem:
+                return f"{label}: {problem}"
+        if len({layers[n].upper() for n in used}) < len(used):     # AutoCAD names ignore case
+            return "The outlines, keys and details layers must have different names."
         return None
 
     def _running(self) -> bool:
@@ -535,7 +663,7 @@ class MainWindow(QMainWindow):
         self.run_btn.setToolTip(problem or "")
         self.cancel_btn.setEnabled(running)
         for w in (self.building_edit, self.room_combo, self.building_combo, self.floor_combo,
-                  self.layer_edit):
+                  self.detail_combo, *self.layer_edits.values()):
             w.setEnabled(not running)
 
     def ask_output_path(self) -> str | None:
@@ -573,9 +701,12 @@ class MainWindow(QMainWindow):
             df=self.df, drawing_path=self.drawing_edit.text(), output_path=output_path,
             room_col=room, building_col=bldg, floor_col=floor,
             building_id=self.building_edit.text().strip(),
-            layer=self.layer_edit.text().strip(),
+            layers=pipeline.OutputLayers(**self.layer_names()),
+            detail_cols=self.detail_columns(),
         )
-        self.settings.setValue("layer_name", request.layer)
+        for name, value in self.layer_names().items():
+            self.settings.setValue(f"layer_{name}", value)
+        self.settings.setValue("detail_cols", request.detail_cols)
         self.result = None
         self._fill_table([])
         self.summary.setText("Running…")
@@ -612,11 +743,16 @@ class MainWindow(QMainWindow):
         self.progress.setValue(self.progress.maximum())
         self._fill_table(result.rows)
         self.tabs.setCurrentIndex(0)
-        layer = self.worker.request.layer if self.worker else ""
-        self.set_status(f"Done — {result.created} rooms written to layer {layer}.  "
+        self.set_status(f"Done — {result.created} rooms written.  "
                         f"Saved as {os.path.basename(result.output_path)}")
         self.status.setToolTip(result.output_path)
-        QMessageBox.information(self, APP_NAME, f"{result.created} rooms written to layer {layer}.\n\n"
+        layers = ""
+        if self.worker is not None:
+            req = self.worker.request
+            layers = f"\n\nOutlines: {req.layers.outlines}\nKeys: {req.layers.keys}"
+            if req.detail_cols:
+                layers += f"\nDetails: {req.layers.details} ({', '.join(req.detail_cols)})"
+        QMessageBox.information(self, APP_NAME, f"{result.created} rooms written.{layers}\n\n"
                                                 f"Saved to:\n{result.output_path}")
 
     def _on_stopped(self, message: str):
