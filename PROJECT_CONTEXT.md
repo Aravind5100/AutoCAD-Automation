@@ -7,7 +7,7 @@
 > **Evidence labels:** **[verified]** = checked by reading or running code/files ·
 > **[history]** = from git commits or old docs · **[inferred]** = reasoned, not confirmed — treat as a hypothesis.
 >
-> Last updated: **2026-10-07** (D19: three output layers + optional detail columns).
+> Last updated: **2026-10-14** (D19–D21 done, v2.1 package built; see §0.2 for next steps).
 
 ---
 
@@ -32,9 +32,11 @@
   (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
 
 ### 0.2 Pending / next steps (owner had not decided yet)
-1. **Rebuild the supervisor package.** `Room_Layer_Tool_v2.0.zip` (in the repo folder, gitignored) and `dist/`
-   were built **before** D16/D19 — they still create **one layer per room**. Rebuild (as v2.1 or later) once the
-   owner is happy with the 3-layer output (recipe in §10.6). The owner has not said whether v2.0 was already sent.
+1. **Supervisor package rebuilt: `Room_Layer_Tool_v2.1.zip`** (66 MB, repo folder, gitignored; built 2026-10-07 from
+   `ee2f4c7`: 3 layers, Room details, Floor box, re-run replaces). Exe self-test PASS incl. a real 0036 job (62 rooms,
+   11 s); unzipped copy self-test PASS. Not yet sent (owner's call; share via OneDrive/Drive). The old
+   `Room_Layer_Tool_v2.0.zip` (per-room layers) is still in the folder — delete once v2.1 is sent.
+   Note: the self-test's "real job" mode has no floor / detail arguments (uses all floors, no details).
 2. **The owner has not yet looked at the 3-layer output (D19) in AutoCAD.**
 3. **ArcGIS workflow not verified by anyone in this project.** The documented flow (polygon + annotation
    feature classes filtered to the room layer → spatial join → join spreadsheet on the key) is reasoned, not tested.
@@ -136,9 +138,9 @@ rooms carry a `Building-Floor-Room` key that ArcGIS can join to the facilities t
 ### 4.1 Pipeline (`pipeline.run`, called by the Qt window on a `RunWorker` QThread)
 
 ```
-RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, building_id,
+RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, building_id, floor_id="",
            layers=OutputLayers(outlines, keys, details), detail_cols=[...])
-  1 Filter spreadsheet to building_id (BEFORE AutoCAD; 0 rows → RunStopped)
+  1 Filter spreadsheet to building_id, then floor_id if given (BEFORE AutoCAD; 0 rows → RunStopped)
   2 [DWG only] dwg_converter.dwg_to_dxf(dwg, work_dir)
         _acad_session: Dispatch AutoCAD (launches it if not running), Visible=True,
         save + set FILEDIA/CMDDIA/PROXYNOTICE = 0 (blank anchor drawing if none open), restore on exit
@@ -244,7 +246,8 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | Oct 7 `df4763b` | This file rewritten as a handoff; README project structure updated. |
 | Oct 7 `a24b2c4` | **D19: three layers** (outlines / keys / details) + optional detail columns picked in the app. |
 | Oct 7 `425c25f` | 5-pass code review (findings B21–B31 in §8); **D20: Floor box** fixes B21. |
-| Oct 7 | **D21:** re-run replaces the earlier output (B23); repeated room labels reported (B22). |
+| Oct 7 `ee2f4c7` | **D21:** re-run replaces the earlier output (B23); repeated room labels reported (B22). |
+| Oct 7 | `Room_Layer_Tool_v2.1.zip` built and verified (self-test PASS from the exe and from a fresh unzip). |
 
 ---
 
@@ -321,8 +324,9 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 
 ## 9. Delivered / proved / useful
 
-**Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (v2.0 — needs a v2.1 rebuild); one-layer
-ArcGIS-oriented output with visible keys; per-room results table; 87 + 2 tests; README, packaging README, learning report.
+**Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (`Room_Layer_Tool_v2.1.zip`); 3-layer
+ArcGIS-oriented output (outlines / keys / optional details) with visible keys; Floor box; re-run replaces earlier output;
+per-room results table; 99 + 2 tests; README, packaging README, learning report.
 
 **Proved on real data:** 62/62 rooms of building 0036 matched and written (also with the 3-layer output); conversions produce real 2018 DWGs
 (`AC1032`); originals untouched; XData links survive conversion; the packaged exe gives identical tag positions to source.
