@@ -21,7 +21,14 @@ from typing import Callable
 
 import pandas as pd
 
-from annotation_writer import CREATED, SKIPPED, OutputLayers, RoomOutcome, write_room_layers
+from annotation_writer import (
+    CREATED,
+    SKIPPED,
+    OutputLayers,
+    RoomOutcome,
+    layers_with_drawing_content,
+    write_room_layers,
+)
 from autocad_scanner import scan_drawing
 from polygon_matcher import associate_texts_with_polygons, match_rooms
 from utils import filter_dataframe_by_building, filter_dataframe_by_value, normalize_room_id
@@ -137,6 +144,17 @@ def run(
         result.labels_found, result.polygons_found = len(scan.room_texts), len(scan.polygons)
         if not scan.room_texts:
             raise RunStopped("No room numbers were found in the drawing.")
+        # Output layers must not be layers the drawing itself uses (B30)
+        out_layers = [req.layers.outlines, req.layers.keys]
+        if req.detail_cols:
+            out_layers.append(req.layers.details)
+        clash = layers_with_drawing_content(scan.doc, out_layers)
+        if clash:
+            raise RunStopped(
+                f"The drawing already uses layer{'s' if len(clash) > 1 else ''} "
+                f"{', '.join(clash)} for its own content.\n"
+                "Writing there would mix the room keys with it. "
+                "Choose other layer names in step 2.")
 
         checkpoint("Linking room labels to room outlines...")
         assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons, log_fn=plain_log)

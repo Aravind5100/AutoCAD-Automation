@@ -173,7 +173,10 @@ Three **layer** boxes name the layers the tool writes (your last choice is remem
 | Keys layer | `ROOM_KEYS` | the `Building-Floor-Room` key text inside every room |
 | Details layer | `ROOM_DETAILS` | the values of the columns ticked in **Room details** (only used when some are ticked) |
 
-The names must differ, and cannot contain `< > / \ " : ; ? * | = `` ` ``.
+The names must differ, and cannot contain `< > / \ " : ; ? * | = `` ` ``. They must not be
+layers the drawing already uses for its own content (e.g. `A-AREA-PLINE`): the run then stops
+with a message, before anything is written. An existing empty layer, or one holding only an
+earlier run's output, is fine.
 
 **Room details (optional):** a drop-down listing every spreadsheet column — tick as many as you
 like (e.g. *Room Name*, *Department Name*; the list stays open while you tick) to write their
@@ -326,6 +329,9 @@ duplicates. Layers left empty by that are removed. Hand edits to the tool's own 
 
 A room number labelled **more than once** in the drawing uses the first label; the extra label
 is listed in Results as *Skipped* and the room is marked *⚠ Check*.
+
+When several room labels sit inside the **same outline**, the outline is copied once; each room
+still gets its own key, and the rooms are marked *⚠ Check* ("outline shared with …").
 
 ---
 

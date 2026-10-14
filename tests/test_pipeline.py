@@ -249,6 +249,31 @@ class TestRoomKeys(TempDirTestCase):
         self.assertIn("ROOM_KEYS", doc.layers)                       # still holds the line
         self.assertNotIn("ROOM_OUTLINES", doc.layers)
 
+    def test_shared_outline_copied_once(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        msp.add_lwpolyline([(0, 0), (200, 0), (200, 100), (0, 100)], close=True)  # one outline
+        msp.add_text("101", dxfattribs={"insert": (20, 50), "height": 5})
+        msp.add_text("102", dxfattribs={"insert": (120, 50), "height": 5})      # same outline
+        doc.saveas(self.path("0132_SH.dxf"))
+        outcomes = []
+        from polygon_matcher import associate_texts_with_polygons, match_rooms
+        from spreadsheet_loader import load_spreadsheet
+        cols = ["Building ID", "Floor", "Room Number"]
+        scan = scan_drawing(self.path("0132_SH.dxf"))
+        summary = match_rooms(scan.room_texts,
+                              associate_texts_with_polygons(scan.room_texts, scan.polygons),
+                              load_spreadsheet(self.sheet), "Room Number", cols)
+        out, created = write_room_layers(scan.doc, summary.results, scan.room_texts, *cols,
+                                         "0132", [], outcomes=outcomes)
+        self.assertEqual(created, 2)
+        copies = [e for e in out.modelspace().query("LWPOLYLINE") if read_xdata(e)]
+        self.assertEqual(len(copies), 1)                          # not one per label
+        self.assertEqual(set(room_key_labels(out)), {"0132-01-101", "0132-01-102"})
+        for o in outcomes:
+            self.assertTrue(o.needs_check)
+            self.assertIn("outline shared with", o.note)
+
     def test_room_labelled_twice_is_reported(self):
         doc = ezdxf.new("R2018")
         msp = doc.modelspace()

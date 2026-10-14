@@ -26,7 +26,9 @@
 - **Re-run replaces (D21, 2026-10-07):** running on an output drawing removes everything the earlier run wrote
   (found by XData) and writes it again with the current settings; emptied layers are removed (B23). A room number
   labelled twice is reported (Results row "skipped" + "needs check" on the written room) (B22).
-- **Tests:** 99 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
+- **B25/B30 fixed (2026-10-14):** an outline shared by several labels is copied once; output layer names that the
+  drawing itself uses stop the run (`RunStopped`) after the scan, before anything is written.
+- **Tests:** 101 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
   B10/B11). The 2 real-AutoCAD integration tests pass (`run_tests.bat acad`).
 - **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run
   (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
@@ -170,7 +172,9 @@ RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, bui
         (same as without details) and the details are stacked under it (→ needs_check)
         first: delete previous_output, remember its rooms/layers; at the end remove those layers if now unused
         RoomOutcome per room: created / skipped (no polygon, empty key part) / failed;
-        needs_check (nearest link, tag doesn't fit, polygon shared by 2+ labels)
+        needs_check (nearest link, tag doesn't fit, polygon shared by 2+ labels — outline copied once, B25)
+     3b (pipeline, after the scan) output layers used by the drawing's own content → RunStopped (B30;
+        annotation_writer.layers_with_drawing_content, case-insensitive, ignores our XData entities)
   7 [DWG] dxf_doc_to_dwg → temp DXF in work_dir → AutoCAD SaveAs native 2018 DWG (code 64) | [DXF] doc.saveas
   work_dir is always removed (finally). is_cancelled() is checked between steps → RunCancelled, nothing saved.
 → RunResult(created, matched, sheet_rows, labels_found, polygons_found, rows=[ResultRow(room, key, status, note, needs_check)])
@@ -200,7 +204,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | `build_exe.spec` | PyInstaller 6 one-folder build of the Qt app → `dist\Room Layer Tool\Room Layer Tool.exe` (no UPX, Tkinter excluded, ezdxf data bundled) |
 | `packaging/README.md` | Short install/usage guide shipped inside the ZIP (for the supervisor) |
 | `setup.bat` / `run.bat` | Source setup (venv + pip incl. PySide6) and launch |
-| `tests/` + `run_tests.bat` | 99 offline tests + `test_acad_integration.py` (opt-in) |
+| `tests/` + `run_tests.bat` | 101 offline tests + `test_acad_integration.py` (opt-in) |
 | `README.md` | Developer/user README for the source version |
 | `CLAUDE.md` | Imports this file |
 | `AutoCAD_Project_Learning_Report.docx` | 31-page learning report written 2026-09-29 (historical snapshot) |
@@ -210,7 +214,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | Item | Value |
 |---|---|
 | Layers | outlines `ROOM_OUTLINES` (colour 3 green), keys `ROOM_KEYS` (2 yellow), details `ROOM_DETAILS` (4 cyan, only created when detail columns are ticked); names from the app |
-| Per matched room | closed **copy** of its polygon (outlines) + **TEXT = key** inside the room (keys) + one **TEXT per non-empty ticked column**, stacked under the key, in column order (details) |
+| Per matched room | closed **copy** of its polygon (outlines; once per polygon even if 2+ labels share it) + **TEXT = key** inside the room (keys) + one **TEXT per non-empty ticked column**, stacked under the key, in column order (details) |
 | Key | `<Building>-<Floor>-<Room>` with values **exactly as in the spreadsheet** (trimmed only), e.g. `0036-1-022`, `0132-01-101` |
 | Tag size | the room label's text height, shrunk to 75%/50% if needed to fit (key and details share one size) |
 | XData | app `ROOM_INFO_AI` on every written entity: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type` (`room_outline` / `room_key` / `room_detail`; `room_layer` in drawings from before D19) + `field` (column name, details only) |
@@ -248,6 +252,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | Oct 7 `425c25f` | 5-pass code review (findings B21–B31 in §8); **D20: Floor box** fixes B21. |
 | Oct 7 `ee2f4c7` | **D21:** re-run replaces the earlier output (B23); repeated room labels reported (B22). |
 | Oct 7 | `Room_Layer_Tool_v2.1.zip` built and verified (self-test PASS from the exe and from a fresh unzip). |
+| Oct 14 | B25 (shared outline copied once) and B30 (output layer clashing with drawing content stops the run) fixed. |
 
 ---
 
@@ -311,12 +316,12 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | B22 | ✅ 2026-10-07 (D21) | A room number labelled twice in one drawing: the extra label was silently ignored. Now `MatchSummary.repeated_labels` → Results row (skipped) + "needs check" + log warning. |
 | B23 | ✅ 2026-10-07 (D21) | Re-running on an output drawing skipped every room, so details / layer names could not be changed later. Now the earlier output is replaced. Verified on real 0036 output: 169 entities replaced, 62 rooms, old `ROOM_KEYS` layer removed after renaming. Also found: the old "re-run adds no duplicates" test passed vacuously (file name gave building "RUN1") — fixed. |
 | B24 | open 🟢 | Outline copies and point-in-polygon use vertices only: arc segments (bulges) become straight. 0036 has no arcs. |
-| B25 | open 🟡 | A polygon shared by 2+ labels is copied once per label (duplicate outlines on the outlines layer); flagged "needs check" but still written. |
+| B25 | ✅ 2026-10-14 | A polygon shared by 2+ labels was copied once per label (duplicate outlines). Now copied once (XData of the first room); each room still gets its key; all flagged "outline shared with … (copied once)". Not present in 0036. |
 | B26 | open 🟢 | Only model space is scanned: labels/outlines inside blocks, xrefs or paper space are not found. |
 | B27 | open 🟢 | Label position = TEXT insert point (wrong for centred/right-aligned TEXT); rotated labels get horizontal tags. 0036 has no rotated labels. |
 | B28 | open 🟡 | No overall timeout: an AutoCAD dialog not covered by FILEDIA/CMDDIA/PROXYNOTICE (missing fonts/xrefs) blocks the run; Cancel waits for the COM call. |
 | B29 | open 🟡 | Whole drawing goes DWG→DXF→ezdxf→DXF→DWG; only hatch/MTEXT counts and XData verified. Dynamic blocks, AEC/proxy objects, annotative scales not checked. |
-| B30 | open 🟢 | Output layer names are not checked against layers already in the drawing (e.g. typing `A-AREA-PLINE` mixes with originals). |
+| B30 | ✅ 2026-10-14 | Output layer names were not checked against the drawing's layers. Now a layer holding the drawing's own content (case-insensitive) stops the run with a message; empty layers / earlier tool output are fine; the details layer is only checked when details are ticked. Verified on 0036 with `A-AREA-PLINE`. For DWG the check runs after the AutoCAD conversion (layer names are only known then). |
 | B31 | open 🟢 | `dwg_converter._call` retries any AttributeError for 60 s, so a real coding error looks like a hang. |
 | B20 | note | Intermittent real-AutoCAD test failure seen once (end-of-test check of open drawings/settings) — likely the owner using AutoCAD during the test; not reproduced in 3 reruns. |
 
@@ -326,7 +331,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 
 **Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (`Room_Layer_Tool_v2.1.zip`); 3-layer
 ArcGIS-oriented output (outlines / keys / optional details) with visible keys; Floor box; re-run replaces earlier output;
-per-room results table; 99 + 2 tests; README, packaging README, learning report.
+per-room results table; 101 + 2 tests; README, packaging README, learning report.
 
 **Proved on real data:** 62/62 rooms of building 0036 matched and written (also with the 3-layer output); conversions produce real 2018 DWGs
 (`AC1032`); originals untouched; XData links survive conversion; the packaged exe gives identical tag positions to source.
@@ -407,3 +412,4 @@ Unsigned exe → Windows SmartScreen "More info → Run anyway" (documented in t
 15. Committed D19 (`a24b2c4`). 5-pass review → B21–B31 + loose ends (Tk window drift, self-test doesn't cover
     layers/details, unused fields, README "AutoCAD-Annotator" name). Owner chose the **Floor box** (D20) for B21.
 16. Owner: "fix B23 and B22" → D21 (re-run replaces; repeated labels reported).
+17. Owner: "push it and tell next steps" → `3fcf693`; then "fix B25 and B30" → done (2026-10-14).

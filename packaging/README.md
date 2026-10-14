@@ -84,6 +84,8 @@ Room columns with `-`.
   The last line should read `RESULT: PASS`.
 - **"No spreadsheet rows have … = 0036"**: the Building ID or the Building column is wrong.
 - **"… has no spreadsheet rows with … = 2"**: the Floor or the Floor column is wrong.
+- **"The drawing already uses layer …"**: one of the three layer names in step 2 is a layer of
+  the drawing itself. Choose another name.
 - **Few or no rooms matched**: check the Room column. Room numbers must be written the same
   way in the drawing and the spreadsheet (`022` is not `22`).
 - **Seems stuck on "Converting DWG to DXF"**: switch to AutoCAD and close any open dialog

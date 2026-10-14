@@ -83,6 +83,26 @@ class TestPipelineRun(TempDirTestCase):
         self.assertTrue(any(lvl == pipeline.WARN and "labelled more than once" in m
                             for lvl, m in logs), logs)
 
+    def test_layer_used_by_the_drawing_stops_the_run(self):
+        import ezdxf
+        doc = ezdxf.readfile(self.plan)
+        doc.modelspace().add_line((0, 0), (5, 5), dxfattribs={"layer": "A-AREA-PLINE"})
+        doc.layers.add("EMPTY-LAYER")
+        doc.saveas(self.plan)
+        with self.assertRaises(pipeline.RunStopped) as stop:
+            pipeline.run(self.request(layers=pipeline.OutputLayers(keys="a-area-pline")))
+        self.assertIn("A-AREA-PLINE", str(stop.exception))       # any case
+        self.assertFalse(os.path.exists(self.path("out.dxf")))
+        # an existing but empty layer is fine; so is re-running with the same names
+        layers = pipeline.OutputLayers(outlines="EMPTY-LAYER")
+        pipeline.run(self.request(layers=layers))
+        res = pipeline.run(self.request(drawing_path=self.path("out.dxf"),
+                                        output_path=self.path("out2.dxf"), layers=layers))
+        self.assertEqual(res.created, 3)
+        # an unused details layer name is not checked when no details are picked
+        pipeline.run(self.request(output_path=self.path("out3.dxf"),
+                                  layers=pipeline.OutputLayers(details="A-AREA-PLINE")))
+
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):
             pipeline.run(self.request(building_id="9876"))

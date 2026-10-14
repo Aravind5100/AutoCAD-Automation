@@ -5,7 +5,8 @@ Writes the **room layers** into a DXF file using **ezdxf**, for ArcGIS.
 
 Every matched room gets, each on its own layer (names editable in the app):
   a. outlines layer (default ``ROOM_OUTLINES``) -- a copy of the room's
-     boundary polygon. The original polygon and its layer are left untouched.
+     boundary polygon (once per polygon, even if several room labels share it).
+     The original polygon and its layer are left untouched.
   b. keys layer (default ``ROOM_KEYS``) -- a text label with the room key
      ``<Building>-<Floor>-<Room>`` (e.g. ``0132-01-101``, values as-is from the
      matched spreadsheet row), next to the room label, inside the room where
@@ -162,6 +163,7 @@ def write_room_layers(
     nearest: list[str] = []
     failed: list[str] = []
     rooms_by_polygon: dict[str, list[str]] = {}
+    outline_copies: set[str] = set()         # polygon handles already copied (B25)
     results: dict[str, RoomOutcome] = {}     # room_id -> outcome, in match order
 
     def outcome(room_id, **kw):
@@ -189,11 +191,14 @@ def write_room_layers(
         details = [(col, str(row.get(col) or "").strip()) for col in detail_cols]
         details = [(col, value) for col, value in details if value]
         try:
-            copy = _add_polygon(doc, msp, match.polygon_vertices, layers.outlines)
+            written = []
+            if match.polygon_handle not in outline_copies:    # one copy per polygon
+                copy = _add_polygon(doc, msp, match.polygon_vertices, layers.outlines)
+                outline_copies.add(match.polygon_handle)
+                written.append((copy, OUTLINE, ""))
             texts, fits = _add_labels(msp, labels.get(match.text_handle), key,
                                       [value for _, value in details],
                                       match.polygon_vertices, layers)
-            written = [(copy, OUTLINE, "")]
             if texts:
                 written.append((texts[0], KEY, ""))
                 written += [(t, DETAIL, col) for t, (col, _) in zip(texts[1:], details)]
@@ -242,11 +247,12 @@ def write_room_layers(
               "rooms linked to the NEAREST polygon (label outside any polygon) -- please check")
     shared = [r for r in rooms_by_polygon.values() if len(r) > 1]
     _log_list(log_fn, [", ".join(r) for r in shared],
-              "polygons shared by more than one room label -- please check")
+              "polygons shared by more than one room label (outline copied once) -- please check")
     for rooms in shared:
         for room_id in rooms:
             o = results[room_id]
-            o.note = "; ".join(filter(None, [o.note, f"polygon shared with {', '.join(r for r in rooms if r != room_id)}"]))
+            others = ", ".join(r for r in rooms if r != room_id)
+            o.note = "; ".join(filter(None, [o.note, f"outline shared with {others} (copied once)"]))
             o.needs_check = True
 
     _remove_unused_layers(doc, earlier_layers - {layers.outlines, layers.keys, layers.details},
@@ -337,6 +343,23 @@ def _add_labels(msp, label, key: str, details: list[str],
 
 def _text(msp, text: str, height: float, insert: tuple[float, float], layer: str):
     return msp.add_text(text, height=height, dxfattribs={"layer": layer, "insert": insert})
+
+
+def layers_with_drawing_content(doc, names) -> list[str]:
+    """Layers named in *names* (case-insensitive) that hold entities of the
+    drawing itself (anything without our XData), spelled as in the drawing.
+    Writing there would mix the tool's output with the drawing's own content (B30)."""
+    wanted = {n.upper() for n in names if n}
+    found: dict[str, str] = {}               # upper-case name -> name as the drawing spells it
+    for e in doc.entitydb.values():
+        if not wanted - found.keys():
+            break
+        if not (e.is_alive and e.dxf.hasattr("layer")):
+            continue
+        layer = e.dxf.layer
+        if layer.upper() in wanted and layer.upper() not in found and read_xdata(e) is None:
+            found[layer.upper()] = layer
+    return sorted(found.values())
 
 
 def _remove_previous_output(msp, entities: list, log_fn) -> tuple[set[str], set[str]]:
