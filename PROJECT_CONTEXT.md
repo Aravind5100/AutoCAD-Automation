@@ -28,7 +28,15 @@
   labelled twice is reported (Results row "skipped" + "needs check" on the written room) (B22).
 - **B25/B30 fixed (2026-10-14):** an outline shared by several labels is copied once; output layer names that the
   drawing itself uses stop the run (`RunStopped`) after the scan, before anything is written.
-- **Tests:** 101 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
+- **Label detection fixed (2026-10-14, D22):** found with the owner's test folder (§0.3b). Room IDs without digits
+  (`LOBBY`, `MECH`, `MENS`, `WOMENS`, `ELEV`, `TELDATA`) were never read as labels → "not in drawing". Now any text
+  equal to a spreadsheet room ID (building + floor) is a label. Stacked labels (room number over area figure, two
+  TEXTs) could give a room's key to the wrong outline (`102` = area of `102D`); now the top label wins and unmatched
+  secondary lines are not reported. 10 of 11 test drawings: every sheet room written.
+- **Leading-zero matches (D23, 2026-10-14):** a drawing label that matches a sheet room only without leading zeros
+  (all digits, unique on both sides) is offered in one dialog: **Use drawing** (key `0002-B-015`) / **Use
+  spreadsheet** (key `0002-B-15`) / **Skip** (unmatched) (B32). Krug Hall B: 44/44, 44/44, 41/44.
+- **Tests:** 107 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
   B10/B11). The 2 real-AutoCAD integration tests pass (`run_tests.bat acad`).
 - **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run
   (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
@@ -59,6 +67,13 @@
 | Drawing | `C:\Users\akompal\Downloads\0036_Maintenance_01.dwg` — building **0036**, floor code **`1`**; room labels are **two-line MTEXT** (room number over area, e.g. `022` / `170`) on layer `A-AREA-IDEN`; room outlines are LWPOLYLINEs on `A-AREA-PLINE` (63). ~5,700 entities. |
 | Result (one-layer version) | 62 rooms written; 4 "needs check" (key label doesn't fit: `STAIR1`, `SHAFT1`, `SHAFT2`, `CORR6`); 4 drawing labels not in sheet (`18`, `48`, `80` = area figures; `ELECT1` — sheet has `ELEC1`); 15 sheet rows for 0036 not in this drawing; 81 result rows. |
 | Old outputs in Downloads | `0036_Maintenance_01_annotated.dwg` (owner's run of the **per-room-layer** version); `0036_Maintenance_01.dxf` and `0036_Maintenance_01_annotated.dwg.dxf` = leftovers from an old version, safe to delete (owner told; not deleted by Claude). |
+
+### 0.3b Owner's test folder (2026-10-14)
+`C:\Users\akompal\Desktop\Autocad Tests\` — `0001_Finley_01/02`, `0002_Krug Hall_01/02/0B`, `0003_West_01/02/0B`
+(+ `_01-o`, an older variant), `0004_East_01/02`, plus `*-sp.dwg` (same buildings, not named by building code) and a
+`Results\` folder for the owner's outputs. Floor from the name: `_01`→`1`, `_02`→`2`, `_0B`→`B` (sheet floors for
+0001/0004: 1,2; 0002/0003: 1,2,B). `.dwl` files = drawing open in AutoCAD (leave alone). Results 2026-10-14 (D22):
+all sheet rooms written on 10 of 11 drawings; Krug B misses 3 (B32); West `_01-o` misses MENS/WOMENS (old variant).
 
 ### 0.4 How the owner likes to work (from the session)
 - Explain in **plain language**, then act. For design decisions offer **2–4 options with a recommendation**;
@@ -150,7 +165,8 @@ RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, bui
         the user's open drawings are never touched; warns if the drawing is open with unsaved changes
         every COM call via _call (retries RPC_E_CALL_REJECTED / AttributeError while AutoCAD is busy, 60 s)
   3 autocad_scanner.scan_drawing(dxf)  (ezdxf, one pass over modelspace)
-        TEXT/MTEXT → room label if is_room_identifier(); multi-line MTEXT → first line that looks like a room ID
+        TEXT/MTEXT → room label if it equals a spreadsheet room ID (known_room_ids = building+floor rows) or
+        is_room_identifier(); multi-line MTEXT → first line that is a sheet ID, else first that looks like a room ID
         label_bbox measured with ezdxf.bbox (for tag placement); MTEXT size from char_height
         entities carrying our XData (outline copies / key + detail labels of earlier runs) → ScanResult.previous_output
         (+ their room IDs); not scanned as rooms/labels
@@ -159,7 +175,9 @@ RunRequest(df, drawing_path, output_path, room_col, building_col, floor_col, bui
   4 polygon_matcher.associate_texts_with_polygons: bbox prefilter → ray cast → smallest containing polygon
         ("contains"); else nearest centroid ≤ 500 units ("nearest")
   5 polygon_matcher.match_rooms(..., [building_col, floor_col, room_col] + detail_cols): strip+lowercase exact match,
-        first occurrence wins; unmatched lists both ways; 0 matches → RunStopped
+        secondary labels (directly under another label in the same polygon, ≤2.5 heights, x-overlap) rank last,
+        so the top label wins; else first occurrence wins; unmatched secondary labels → secondary_ignored (not
+        reported); repeated_labels only for sheet rooms; unmatched lists both ways; 0 matches → RunStopped
   6 annotation_writer.write_room_layers(scan.doc, ..., outcomes=[...], layers=req.layers, detail_cols=...)
         ensure the layers (outlines 3 green, keys 2 yellow, details 4 cyan — details only if columns ticked);
         per matched room: key = build_room_key(row values as-is)
@@ -204,7 +222,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | `build_exe.spec` | PyInstaller 6 one-folder build of the Qt app → `dist\Room Layer Tool\Room Layer Tool.exe` (no UPX, Tkinter excluded, ezdxf data bundled) |
 | `packaging/README.md` | Short install/usage guide shipped inside the ZIP (for the supervisor) |
 | `setup.bat` / `run.bat` | Source setup (venv + pip incl. PySide6) and launch |
-| `tests/` + `run_tests.bat` | 101 offline tests + `test_acad_integration.py` (opt-in) |
+| `tests/` + `run_tests.bat` | 107 offline tests + `test_acad_integration.py` (opt-in) |
 | `README.md` | Developer/user README for the source version |
 | `CLAUDE.md` | Imports this file |
 | `AutoCAD_Project_Learning_Report.docx` | 31-page learning report written 2026-09-29 (historical snapshot) |
@@ -252,7 +270,9 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | Oct 7 `425c25f` | 5-pass code review (findings B21–B31 in §8); **D20: Floor box** fixes B21. |
 | Oct 7 `ee2f4c7` | **D21:** re-run replaces the earlier output (B23); repeated room labels reported (B22). |
 | Oct 7 | `Room_Layer_Tool_v2.1.zip` built and verified (self-test PASS from the exe and from a fresh unzip). |
-| Oct 14 | B25 (shared outline copied once) and B30 (output layer clashing with drawing content stops the run) fixed. |
+| Oct 14 `336fe07` | B25 (shared outline copied once) and B30 (output layer clashing with drawing content stops the run) fixed. |
+| Oct 14 | **D22:** labels = spreadsheet room IDs too (B11 false negatives); stacked labels ranked (top wins). Checked on 11 test drawings. |
+| Oct 14 | **D23:** leading-zero matches confirmed by the user in one dialog (B32). |
 
 ---
 
@@ -279,6 +299,8 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | D18 | Filter by building before starting AutoCAD | A wrong building ID fails in <1 s | Claude, accepted |
 | D19 | **Three layers**: outline copies (`ROOM_OUTLINES`), key tags (`ROOM_KEYS`), optional details (`ROOM_DETAILS`) with values of user-ticked spreadsheet columns, one TEXT each, stacked under the key; all 3 names editable; Tk window left as is | Owner: separate outlines from tags; generic place for room name etc. Separate TEXTs (not MTEXT) because ArcGIS reads TEXT more reliably | owner 2026-10-07 |
 | D20 | **Floor box** in step 1 (drop-down of the building's floors, editable, required in the Qt app); `RunRequest.floor_id` filters the sheet to building + floor; repeated room numbers within the used rows are logged | Room numbers repeat across floors (B21); owner chose a Floor box over inferring the floor | owner 2026-10-07 |
+| D22 | **Labels from the spreadsheet**: a text equal to a spreadsheet room ID (building + floor) is a label even without digits; stacked labels (one under another in the same polygon) rank last for duplicate IDs and, if unmatched, are not reported | Owner reported rooms "not in drawing" though present (`LOBBY`, `MECH`…); area figures under room numbers stole room numbers | owner 2026-10-14 |
+| D23 | **Leading zeros confirmed by the user**: `match_rooms` collects unique all-digit pairs equal without leading zeros (`leading_zero_matches`); `pipeline.run(confirm_leading_zeros=...)` returns `USE_DRAWING` (room part of the key = drawing label) / `USE_SHEET` / None (skip); the Qt worker emits `confirm_needed` and waits for `MainWindow.ask_leading_zeros` (3-button QMessageBox); one dialog for all pairs (owner chose this over one per room, and asked for the drawing/spreadsheet choice); no callback → skipped, logged | The owner preferred matching with confirmation over fixing the data first | owner 2026-10-14 |
 | D21 | **Re-run replaces**: entities with our XData (TEXT/MTEXT/polylines — not the old block-era INSERTs) are deleted and every room is written again; layers they leave unused are removed (never `0`, `Defpoints` or the current layer); room notes say "replaces the key from an earlier run" | Lets the owner add details / rename layers on an output drawing (B23). Hand edits to the tool's entities are lost | owner asked to fix B23, 2026-10-07 |
 
 ---
@@ -310,7 +332,8 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | B12 | ➖ obsolete | Block-name collisions (no blocks now) |
 | B16 | ✅ 2026-10-07 | README drift — README updated for Qt + one layer + project structure; keep it in sync |
 | **B10** | open 🟡 | Excel numeric building codes lose leading zeros (`132` vs `0132`) → rows filtered out. `expectedFailure` test exists. Fix idea: zero-pad numeric building values to `BUILDING_ID_LENGTH`, or warn. |
-| **B11** | open 🟡 | Room-ID heuristic: false positives (`1ST FLOOR`, `LEVEL 2`, `STAIR 3`, `2024`), false negatives (`LOBBY`). Harmless unless a false positive matches a sheet ID. Fix idea: label-layer filter (real labels are on `A-AREA-IDEN`) or match against spreadsheet IDs. `expectedFailure` test exists. |
+| **B11** | partly ✅ 2026-10-14 (D22) | False negatives (`LOBBY`, `MECH`, …) fixed in the pipeline by matching spreadsheet room IDs (the bare heuristic and its `expectedFailure` test are unchanged). False positives (`1ST FLOOR`, `2024`, area figures) remain possible; area figures under a room number are now ignored. |
+| B32 | ✅ 2026-10-14 (D23) | Leading zeros differ between sheet and drawing: Krug Hall basement sheet cells D17257–59 hold text `15/16/17` (other basement rooms `004`, `011`…) vs drawing `015/016/017`. The data is inconsistent; the owner chose to have the app ask: one dialog lists the pairs — use the drawing's number, the spreadsheet's, or skip. |
 | **B14** | open 🟡 | Nearest fallback uses centroid distance in raw drawing units; concave rooms' centroids can be outside. |
 | B21 | ✅ 2026-10-07 (D20) | Matching ignored the floor: a room number on several floors took the first row's floor/details (wrong keys on upper-floor drawings, rows hidden from "not in drawing"). 0036 floor 1: "not in drawing" 15 → 2 after the fix. Tk window still has this bug. |
 | B22 | ✅ 2026-10-07 (D21) | A room number labelled twice in one drawing: the extra label was silently ignored. Now `MatchSummary.repeated_labels` → Results row (skipped) + "needs check" + log warning. |
@@ -331,7 +354,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 
 **Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (`Room_Layer_Tool_v2.1.zip`); 3-layer
 ArcGIS-oriented output (outlines / keys / optional details) with visible keys; Floor box; re-run replaces earlier output;
-per-room results table; 101 + 2 tests; README, packaging README, learning report.
+per-room results table; 107 + 2 tests; README, packaging README, learning report.
 
 **Proved on real data:** 62/62 rooms of building 0036 matched and written (also with the 3-layer output); conversions produce real 2018 DWGs
 (`AC1032`); originals untouched; XData links survive conversion; the packaged exe gives identical tag positions to source.
@@ -413,3 +436,5 @@ Unsigned exe → Windows SmartScreen "More info → Run anyway" (documented in t
     layers/details, unused fields, README "AutoCAD-Annotator" name). Owner chose the **Floor box** (D20) for B21.
 16. Owner: "fix B23 and B22" → D21 (re-run replaces; repeated labels reported).
 17. Owner: "push it and tell next steps" → `3fcf693`; then "fix B25 and B30" → done (2026-10-14).
+18. Owner: "not reading all the rooms… says not in drawing" + test folder → D22 (spreadsheet IDs as labels; stacked labels ranked). Krug B leading zeros (B32) left for the owner.
+19. Krug B `15` vs `015`: the sheet really holds `15` (text). Owner: "ask the user to confirm, then match" → D23, one dialog for all pairs, with a choice of the drawing's number (`015`) or the spreadsheet's (`15`), or skip.

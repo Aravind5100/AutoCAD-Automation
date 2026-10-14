@@ -103,6 +103,35 @@ class TestPipelineRun(TempDirTestCase):
         pipeline.run(self.request(output_path=self.path("out3.dxf"),
                                   layers=pipeline.OutputLayers(details="A-AREA-PLINE")))
 
+    def _zero_sheet(self):
+        # the plan labels 101, 102, 103; the sheet writes room 103 as 0103
+        return load_spreadsheet(self.write_text("z.csv", "Building ID,Floor,Room Number\n"
+                                                         "0132,01,101\n0132,01,102\n0132,01,0103\n"))
+
+    def test_leading_zero_match_uses_the_chosen_number(self):
+        for choice, key in ((pipeline.USE_DRAWING, "0132-01-103"),
+                            (pipeline.USE_SHEET, "0132-01-0103")):
+            asked = []
+            res = pipeline.run(self.request(df=self._zero_sheet()),
+                               confirm_leading_zeros=lambda pairs: asked.append(pairs) or choice)
+            self.assertEqual(asked, [[("103", "0103")]])
+            row = next(r for r in res.rows if r.room == "103")
+            self.assertEqual((row.status, row.key, row.needs_check), ("created", key, True))
+            self.assertIn("leading zeros", row.note)
+            self.assertEqual(res.created, 3)
+            self.assertFalse([r for r in res.rows if r.status == pipeline.NOT_IN_DRAWING])
+
+    def test_leading_zero_match_skipped_or_not_asked(self):
+        for confirm in (lambda pairs: None, None):
+            logs = []
+            res = pipeline.run(self.request(df=self._zero_sheet()), confirm_leading_zeros=confirm,
+                               log=lambda m, lvl: logs.append(m))
+            self.assertEqual(res.created, 2)
+            statuses = {r.room: r.status for r in res.rows}
+            self.assertEqual((statuses["103"], statuses["0103"]),
+                             (pipeline.NOT_IN_SHEET, pipeline.NOT_IN_DRAWING))
+            self.assertTrue(any("leading zeros" in m and "not used" in m for m in logs), logs)
+
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):
             pipeline.run(self.request(building_id="9876"))

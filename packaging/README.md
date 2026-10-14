@@ -84,6 +84,9 @@ Room columns with `-`.
   The last line should read `RESULT: PASS`.
 - **"No spreadsheet rows have … = 0036"**: the Building ID or the Building column is wrong.
 - **"… has no spreadsheet rows with … = 2"**: the Floor or the Floor column is wrong.
+- **"Confirm room matches"**: some drawing labels match spreadsheet rooms only if leading zeros
+  are ignored (drawing `015`, sheet `15`). Use drawing = key `…-015`, Use spreadsheet = key
+  `…-15` (both marked ⚠ Check), Skip = leave them unmatched.
 - **"The drawing already uses layer …"**: one of the three layer names in step 2 is a layer of
   the drawing itself. Choose another name.
 - **Few or no rooms matched**: check the Room column. Room numbers must be written the same

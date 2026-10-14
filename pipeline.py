@@ -30,7 +30,7 @@ from annotation_writer import (
     write_room_layers,
 )
 from autocad_scanner import scan_drawing
-from polygon_matcher import associate_texts_with_polygons, match_rooms
+from polygon_matcher import apply_leading_zero_matches, associate_texts_with_polygons, match_rooms
 from utils import filter_dataframe_by_building, filter_dataframe_by_value, normalize_room_id
 
 # Status of rows that never reached the writer
@@ -38,6 +38,9 @@ NOT_IN_SHEET = "not in spreadsheet"
 NOT_IN_DRAWING = "not in drawing"
 
 INFO, SUCCESS, WARN, ERROR = "INFO", "SUCCESS", "WARN", "ERROR"
+
+# Answers to confirm_leading_zeros: which room number the key uses
+USE_DRAWING, USE_SHEET = "drawing", "sheet"
 
 
 class RunCancelled(Exception):
@@ -82,6 +85,7 @@ class RunResult:
     matched: int = 0
     created: int = 0
     rows: list[ResultRow] = field(default_factory=list)
+    leading_zero_matches: list[str] = field(default_factory=list)   # confirmed drawing labels
 
     def count(self, status: str) -> int:
         return sum(1 for r in self.rows if r.status == status)
@@ -92,8 +96,16 @@ def run(
     log: Callable[[str, str], None] = lambda msg, level=INFO: None,
     step: Callable[[str], None] = lambda text: None,
     is_cancelled: Callable[[], bool] = lambda: False,
+    confirm_leading_zeros: Callable[[list[tuple[str, str]]], str | None] | None = None,
 ) -> RunResult:
-    """Run the whole pipeline. Raises RunStopped, RunCancelled, or conversion/scan errors."""
+    """Run the whole pipeline. Raises RunStopped, RunCancelled, or conversion/scan errors.
+
+    *confirm_leading_zeros* is asked what to do with room labels that match a
+    spreadsheet room only when leading zeros are ignored (drawing ``015``, sheet
+    ``15``); it gets the (drawing, sheet) pairs and returns USE_DRAWING (key uses
+    ``015``), USE_SHEET (key uses ``15``) or None (skip, they stay unmatched).
+    Without it they are skipped.
+    """
     from dwg_converter import dxf_doc_to_dwg, dwg_to_dxf, make_work_dir, remove_work_dir
 
     def checkpoint(text: str):
@@ -140,7 +152,7 @@ def run(
             dxf_path = req.drawing_path
 
         checkpoint("Scanning the drawing...")
-        scan = scan_drawing(dxf_path, log_fn=plain_log)
+        scan = scan_drawing(dxf_path, log_fn=plain_log, known_room_ids=sheet[req.room_col])
         result.labels_found, result.polygons_found = len(scan.room_texts), len(scan.polygons)
         if not scan.room_texts:
             raise RunStopped("No room numbers were found in the drawing.")
@@ -163,6 +175,26 @@ def run(
         key_cols = [req.building_col, req.floor_col, req.room_col]
         summary = match_rooms(scan.room_texts, assoc, sheet, req.room_col,
                               key_cols + [c for c in req.detail_cols if c not in key_cols])
+        zero_pairs = [(label, value) for label, value, _ in summary.leading_zero_matches]
+        if zero_pairs:
+            shown = ", ".join(f"{a} = {b}" for a, b in zero_pairs[:10])
+            choice = confirm_leading_zeros(zero_pairs) if confirm_leading_zeros else None
+            if choice in (USE_DRAWING, USE_SHEET):
+                applied = apply_leading_zero_matches(summary)
+                if choice == USE_DRAWING:                  # the key shows the drawing's number
+                    labels = {label for label, _ in applied}
+                    for match in summary.results:
+                        if match.room_id in labels:
+                            match.row_data[req.room_col] = match.room_id
+                result.leading_zero_matches = [label for label, _ in applied]
+                which = "drawing" if choice == USE_DRAWING else "spreadsheet"
+                log(f"  {len(applied)} rooms matched ignoring leading zeros (confirmed; keys use "
+                    f"the {which} number): {shown}", WARN)
+            else:
+                log(f"  {len(zero_pairs)} room labels would match if leading zeros were ignored "
+                    f"(not used): {shown}", WARN)
+        if is_cancelled():
+            raise RunCancelled()
         result.matched = summary.matched_count
         log(f"  Matched rooms: {summary.matched_count}", SUCCESS)
         if summary.matched_count == 0:
@@ -176,7 +208,10 @@ def run(
             req.room_col, req.building_id, scan.previous_output,
             log_fn=plain_log, outcomes=outcomes, layers=req.layers, detail_cols=req.detail_cols,
         )
-        result.rows = _result_rows(outcomes, summary)
+        result.rows = _result_rows(outcomes, summary, result.leading_zero_matches)
+        if summary.secondary_ignored:
+            log(f"  {len(summary.secondary_ignored)} texts under a room number (e.g. area figures) "
+                f"were not treated as rooms", INFO)
         if summary.repeated_labels:
             log(f"  WARNING: {len(summary.repeated_labels)} room numbers are labelled more than "
                 f"once in the drawing; only the first label is used: "
@@ -195,11 +230,16 @@ def run(
     return result
 
 
-def _result_rows(outcomes: list[RoomOutcome], summary) -> list[ResultRow]:
+def _result_rows(outcomes: list[RoomOutcome], summary, zero_matched=()) -> list[ResultRow]:
     repeated = {normalize_room_id(r) for r in summary.repeated_labels}
+    zero_matched = set(zero_matched)
     for o in outcomes:              # the room that was written: point at the extra label
         if normalize_room_id(o.room_id) in repeated:
             o.note = "; ".join(filter(None, [o.note, "labelled more than once in the drawing"]))
+            o.needs_check = o.needs_check or o.status == CREATED
+        if o.room_id in zero_matched:
+            o.note = "; ".join(filter(None, [o.note, "leading zeros differ from the spreadsheet "
+                                                     "(match confirmed)"]))
             o.needs_check = o.needs_check or o.status == CREATED
     rows = [ResultRow(o.room_id, o.key, o.status, o.note, o.needs_check) for o in outcomes]
     rows += [ResultRow(r, status=SKIPPED,
@@ -212,6 +252,6 @@ def _result_rows(outcomes: list[RoomOutcome], summary) -> list[ResultRow]:
     return rows
 
 
-__all__ = ["run", "RunRequest", "OutputLayers", "RunResult", "ResultRow", "RunCancelled", "RunStopped",
+__all__ = ["run", "RunRequest", "OutputLayers", "USE_DRAWING", "USE_SHEET", "RunResult", "ResultRow", "RunCancelled", "RunStopped",
            "CREATED", "SKIPPED", "NOT_IN_SHEET", "NOT_IN_DRAWING",
            "INFO", "SUCCESS", "WARN", "ERROR"]

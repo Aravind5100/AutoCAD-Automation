@@ -3,7 +3,9 @@ autocad_scanner.py
 ------------------
 Uses **ezdxf** to scan a DXF file and collect:
 
-  1. Room identifier TEXT / MTEXT entities
+  1. Room identifier TEXT / MTEXT entities: text that looks like a room number,
+     or that equals a room ID of the spreadsheet (so names without digits such as
+     ``LOBBY`` or ``MECH`` are found too)
   2. Closed polyline (room polygon) candidates
   3. Entities written by an earlier run of the tool (found by their XData),
      so the writer can replace them
@@ -99,6 +101,7 @@ class ScanResult:
 def scan_drawing(
     dxf_path: str,
     log_fn: Callable[[str], None] | None = None,
+    known_room_ids=(),
 ) -> ScanResult:
     """Scan a DXF file for room texts and polygons using ezdxf.
 
@@ -108,6 +111,10 @@ def scan_drawing(
         Absolute path to the DXF file.
     log_fn : callable, optional
         Accepts a single string for progress logging.
+    known_room_ids : iterable of str, optional
+        Room IDs from the spreadsheet (for this building / floor). A text equal
+        to one of them (case-insensitive) is a room label even if it does not
+        look like a room number (e.g. ``LOBBY``, ``ELEV``).
 
     Returns
     -------
@@ -135,6 +142,7 @@ def scan_drawing(
 
     _log(log_fn, f"  Scanning {total} model-space entities...")
     result = ScanResult(total_entities=total, doc=doc)
+    known = {normalize_room_id(r) for r in known_room_ids} - {""}
 
     for i, entity in enumerate(entities):
         if i > 0 and i % SCAN_PROGRESS_INTERVAL == 0:
@@ -143,7 +151,7 @@ def scan_drawing(
         etype = entity.dxftype()
 
         if etype in ("TEXT", "MTEXT"):
-            _process_text_entity(entity, etype, result)
+            _process_text_entity(entity, etype, result, known)
 
         elif etype in ("LWPOLYLINE", "POLYLINE"):
             _process_polygon_entity(entity, etype, result)
@@ -165,7 +173,12 @@ def scan_drawing(
 # Entity processors
 # ---------------------------------------------------------------------------
 
-def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
+def _is_label(text: str, known: set[str]) -> bool:
+    """A room label: equals a spreadsheet room ID, or looks like a room number."""
+    return normalize_room_id(text) in known or is_room_identifier(text)
+
+
+def _process_text_entity(entity, etype: str, result: ScanResult, known: set[str]) -> None:
     """Extract properties from a TEXT/MTEXT entity and add to result."""
     # Our own key / detail labels from an earlier run are not room labels
     if _record_existing_annotation(entity, result):
@@ -173,7 +186,7 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
 
     try:
         if etype == "MTEXT":
-            text_val = _mtext_room_line(entity)
+            text_val = _mtext_room_line(entity, known)
         else:
             text_val = str(entity.dxf.text).strip()
     except Exception:
@@ -182,7 +195,7 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
 
     layer = entity.dxf.layer if entity.dxf.hasattr("layer") else ""
 
-    if not is_room_identifier(text_val):
+    if not _is_label(text_val, known):
         return
 
     try:
@@ -223,7 +236,7 @@ def _process_text_entity(entity, etype: str, result: ScanResult) -> None:
     ))
 
 
-def _mtext_room_line(entity) -> str:
+def _mtext_room_line(entity, known: set[str] = frozenset()) -> str:
     """Return the line of a multi-line MTEXT label that holds the room number.
 
     Room labels often stack the number over other text (``022`` over the
@@ -235,6 +248,9 @@ def _mtext_room_line(entity) -> str:
     plain = entity.plain_text().replace("\\~", " ")
     lines = [" ".join(line.split()) for line in plain.splitlines()]
     lines = [line for line in lines if line]
+    for line in lines:                  # a spreadsheet room ID wins over "looks like one"
+        if normalize_room_id(line) in known:
+            return line
     for line in lines:
         if is_room_identifier(line):
             return line

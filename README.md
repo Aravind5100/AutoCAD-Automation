@@ -330,6 +330,19 @@ duplicates. Layers left empty by that are removed. Hand edits to the tool's own 
 A room number labelled **more than once** in the drawing uses the first label; the extra label
 is listed in Results as *Skipped* and the room is marked *⚠ Check*.
 
+**Which texts count as room labels:** any text equal to a room ID of the spreadsheet (for the
+chosen building and floor) — so names without digits like `LOBBY`, `MECH` or `WOMENS` are
+found — plus texts that look like room numbers. When labels are stacked in a room (room number
+on top, area figure under it), the lower line is treated as secondary: it never takes a room
+number away from the room where that number is on top, and unmatched area figures are not
+listed as "not in spreadsheet".
+
+**Leading zeros:** if a room label matches a spreadsheet room only when leading zeros are
+ignored (drawing `015`, spreadsheet `15` — all digits, exactly one candidate on each side), the
+app asks once, listing every such pair: **Use drawing** writes them with the drawing's number in
+the key (`0002-B-015`), **Use spreadsheet** with the spreadsheet's (`0002-B-15`) — either way the
+rooms are marked *⚠ Check* — and **Skip** leaves them unmatched.
+
 When several room labels sit inside the **same outline**, the outline is copied once; each room
 still gets its own key, and the rooms are marked *⚠ Check* ("outline shared with …").
 

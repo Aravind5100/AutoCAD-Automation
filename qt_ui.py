@@ -290,12 +290,28 @@ class RunWorker(QThread):
     stopped = Signal(str)                   # expected stop (no rows, no matches...)
     cancelled = Signal()
     failed = Signal(str)
+    confirm_needed = Signal(object)         # list of (drawing, sheet) pairs; reply via answer()
 
     def __init__(self, request):
         super().__init__()
         self.request = request
         self._cancel = threading.Event()
         self._steps = 0
+        self._answered = threading.Event()
+        self._answer = None
+
+    def answer(self, choice):
+        """Called on the GUI thread with the reply to confirm_needed
+        (pipeline.USE_DRAWING, pipeline.USE_SHEET or None = skip)."""
+        self._answer = choice
+        self._answered.set()
+
+    def _confirm(self, pairs):
+        """Runs on the worker thread: ask the window and wait for the reply."""
+        self._answered.clear()
+        self.confirm_needed.emit(pairs)
+        self._answered.wait()
+        return self._answer
 
     def cancel(self):
         self._cancel.set()
@@ -310,7 +326,8 @@ class RunWorker(QThread):
         pythoncom.CoInitialize()            # AutoCAD COM from this thread
         try:
             result = pipeline.run(self.request, log=self.log.emit, step=self._on_step,
-                                  is_cancelled=self._cancel.is_set)
+                                  is_cancelled=self._cancel.is_set,
+                                  confirm_leading_zeros=self._confirm)
         except pipeline.RunCancelled:
             self.cancelled.emit()
         except pipeline.RunStopped as exc:
@@ -766,11 +783,14 @@ class MainWindow(QMainWindow):
         self.worker.stopped.connect(self._on_stopped)
         self.worker.cancelled.connect(self._on_cancelled)
         self.worker.failed.connect(self._on_failed)
+        self.worker.confirm_needed.connect(self._confirm_leading_zeros)
         self.worker.finished.connect(self._update_state)
         self.worker.start()
         self._update_state()
         if wait:                                            # tests
-            self.worker.wait()
+            # keep handling events: the worker may be waiting for a dialog answer
+            while not self.worker.wait(20):
+                QApplication.processEvents()
             QApplication.processEvents()
 
     def _cancel_run(self):
@@ -806,6 +826,40 @@ class MainWindow(QMainWindow):
 
     def _on_cancelled(self):
         self._end_run("Cancelled — nothing was saved.", "WARN")
+
+    def _confirm_leading_zeros(self, pairs):
+        """Ask what to do with labels that match only without leading zeros."""
+        if self.worker is not None:
+            self.worker.answer(self.ask_leading_zeros(pairs))
+
+    def ask_leading_zeros(self, pairs):
+        """Dialog: use the drawing's number, the spreadsheet's number, or skip.
+
+        Returns pipeline.USE_DRAWING, pipeline.USE_SHEET or None.
+        """
+        import pipeline
+        lines = "\n".join(f"   drawing  {a}   =   spreadsheet  {b}" for a, b in pairs[:20])
+        more = f"\n   … and {len(pairs) - 20} more" if len(pairs) > 20 else ""
+        example_drawing, example_sheet = pairs[0]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Confirm room matches")
+        box.setText(f"{len(pairs)} room label(s) in the drawing match a spreadsheet room only "
+                    f"if leading zeros are ignored:\n\n{lines}{more}\n\n"
+                    "Which room number should the key use? The rooms will be marked ⚠ Check.\n"
+                    "Skip = leave them unmatched.")
+        use_drawing = box.addButton(f"Use drawing ({example_drawing})", QMessageBox.AcceptRole)
+        use_sheet = box.addButton(f"Use spreadsheet ({example_sheet})", QMessageBox.AcceptRole)
+        skip = box.addButton("Skip", QMessageBox.RejectRole)
+        box.setDefaultButton(use_drawing)
+        box.setEscapeButton(skip)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is use_drawing:
+            return pipeline.USE_DRAWING
+        if clicked is use_sheet:
+            return pipeline.USE_SHEET
+        return None
 
     def _on_failed(self, message: str):
         self._end_run("Failed — see the Log tab.", "ERROR", message)

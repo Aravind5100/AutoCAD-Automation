@@ -36,7 +36,7 @@ class QtTestCase(TempDirTestCase):
     def setUp(self):
         super().setUp()
         patches = [mock.patch.object(qt_ui.QMessageBox, name) for name in
-                   ("information", "warning", "critical")]
+                   ("information", "warning", "critical", "question")]
         self.boxes = {p.attribute: p.start() for p in patches}
         for p in patches:
             self.addCleanup(p.stop)
@@ -165,6 +165,34 @@ class TestRun(QtTestCase):
         self.win.filter_combo.setCurrentText("Not matched")
         visible = [r for r in range(table.rowCount()) if not table.isRowHidden(r)]
         self.assertEqual(visible, [])                       # every sheet row was matched
+
+    def test_leading_zero_matches_are_confirmed_in_a_dialog(self):
+        sheet = QT_ROOMS_CSV.replace("0132,01,103", "0132,01,0103")
+        self.win.load_sheet(self.write_text("rooms.csv", sheet), wait=True)
+        self.win.set_drawing(make_plan(self.path("0132_TEST.dxf")))
+        import pipeline
+        answers = []
+        with mock.patch.object(self.win, "ask_leading_zeros",
+                               side_effect=lambda pairs: answers.append(pairs) or pipeline.USE_DRAWING):
+            self.win.start_run(self.path("out.dxf"), wait=True)
+        self.assertEqual(answers, [[("103", "0103")]])
+        self.assertEqual(self.win.result.created, 3)
+        keys = {r.room: r.key for r in self.win.result.rows}
+        self.assertEqual(keys["103"], "0132-01-103")                     # the drawing's number
+        with mock.patch.object(self.win, "ask_leading_zeros", return_value=None):   # skip
+            self.win.start_run(self.path("out2.dxf"), wait=True)
+        self.assertEqual(self.win.result.created, 2)
+
+    def test_leading_zero_dialog_buttons(self):
+        import pipeline
+        for index, expected in ((0, pipeline.USE_DRAWING), (1, pipeline.USE_SHEET), (2, None)):
+            def click(box, index=index):
+                box.buttons()  # buttons in insertion order: drawing, sheet, skip
+                target = [b for b in box.buttons()
+                          if b.text().startswith(("Use drawing", "Use spreadsheet", "Skip")[index])][0]
+                target.click()
+            with mock.patch.object(qt_ui.QMessageBox, "exec", lambda box: click(box)):
+                self.assertEqual(self.win.ask_leading_zeros([("015", "15")]), expected)
 
     def test_wrong_building_shows_warning_and_writes_nothing(self):
         self.ready_window()

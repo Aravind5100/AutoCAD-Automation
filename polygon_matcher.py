@@ -72,6 +72,13 @@ class MatchSummary:
     unmatched_drawing: list[str] = field(default_factory=list)
     unmatched_sheet: list[str] = field(default_factory=list)
     repeated_labels: list[str] = field(default_factory=list)   # extra labels of a room number
+    # Labels sitting directly under another label in the same room (e.g. the area
+    # figure under the room number) that matched no spreadsheet room: not reported
+    secondary_ignored: list[str] = field(default_factory=list)
+    # Unmatched drawing label <-> unmatched sheet room that differ only by leading
+    # zeros ("015" vs "15"): (drawing text, sheet value, row data). Used only when
+    # the user confirms (apply_leading_zero_matches).
+    leading_zero_matches: list[tuple[str, str, dict]] = field(default_factory=list)
     associations: list[TextPolygonAssociation] = field(default_factory=list)
     results: list[RoomMatch] = field(default_factory=list)
 
@@ -209,14 +216,26 @@ def match_rooms(
 
     summary.total_sheet_rows = len(sheet_lookup)
 
-    # Deduplicate drawing rooms while preserving order
+    # A room number can appear again as another room's secondary line (its area
+    # figure, e.g. "102" under "102D"). Primary labels go first, so the room
+    # number on top wins; the order is otherwise kept.
+    secondary = _secondary_labels(room_texts, associations)
+    order = sorted(range(len(room_texts)), key=lambda i: i in secondary)
+
     seen: set[str] = set()
     matched_sheet_keys: set[str] = set()
 
-    for rt, assoc in zip(room_texts, associations):
+    for i in order:
+        rt, assoc = room_texts[i], associations[i]
         norm = normalize_room_id(rt.text)
         if norm in seen:
-            summary.repeated_labels.append(rt.text)     # only the first label is used
+            # a second label of a spreadsheet room (a repeated non-room text, e.g. an
+            # area figure, is already listed once as "not in spreadsheet")
+            if i not in secondary and norm in sheet_lookup:
+                summary.repeated_labels.append(rt.text)     # only the first label is used
+            continue
+        if i in secondary and norm not in sheet_lookup:
+            summary.secondary_ignored.append(rt.text)   # e.g. an area figure: not a room
             continue
         seen.add(norm)
 
@@ -246,12 +265,87 @@ def match_rooms(
         if norm_key not in matched_sheet_keys:
             summary.unmatched_sheet.append(raw_val)
 
+    # Possible matches if leading zeros are ignored: all-digit IDs, one on each side
+    def by_number(values):
+        groups: dict[int, list[str]] = {}
+        for v in values:
+            if v.strip().isdigit():
+                groups.setdefault(int(v), []).append(v)
+        return groups
+
+    drawing_numbers = by_number(summary.unmatched_drawing)
+    sheet_numbers = by_number(summary.unmatched_sheet)
+    for number, labels in drawing_numbers.items():
+        rows = sheet_numbers.get(number, [])
+        if len(labels) == 1 and len(rows) == 1:
+            _, row = sheet_lookup[normalize_room_id(rows[0])]
+            summary.leading_zero_matches.append(
+                (labels[0], rows[0], _extract_row_data(row, selected_columns)))
+
     return summary
+
+
+def apply_leading_zero_matches(summary: MatchSummary) -> list[tuple[str, str]]:
+    """Turn the confirmed ``leading_zero_matches`` into matches.
+
+    Returns the (drawing text, sheet value) pairs that were applied.
+    """
+    applied = []
+    for label, sheet_value, row_data in summary.leading_zero_matches:
+        result = next((r for r in summary.results if r.room_id == label and not r.matched), None)
+        if result is None:
+            continue
+        result.matched = True
+        result.sheet_room_id = sheet_value
+        result.row_data = row_data
+        summary.matched_count += 1
+        summary.unmatched_drawing.remove(label)
+        summary.unmatched_sheet.remove(sheet_value)
+        applied.append((label, sheet_value))
+    summary.leading_zero_matches = []
+    return applied
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _secondary_labels(room_texts: list, associations: list) -> set[int]:
+    """Indexes of labels that sit directly under another label in the same room.
+
+    Room labels are often stacked: the room number on top, other lines (the
+    area figure, ...) under it. A label counts as secondary when another label
+    linked to the same polygon is above it, within ~2.5 text heights, and
+    overlaps it horizontally.
+    """
+    by_polygon: dict[str, list[int]] = {}
+    for i, a in enumerate(associations):
+        if a.polygon_handle:
+            by_polygon.setdefault(a.polygon_handle, []).append(i)
+
+    def x_range(rt):
+        if rt.label_bbox is not None:
+            return rt.label_bbox[0], rt.label_bbox[2]
+        x = rt.position[0]
+        return x, x + rt.text_height * 0.7 * max(len(rt.text), 1)
+
+    secondary: set[int] = set()
+    for members in by_polygon.values():
+        for i in members:
+            below = room_texts[i]
+            bx0, bx1 = x_range(below)
+            for j in members:
+                if j == i:
+                    continue
+                above = room_texts[j]
+                dy = above.position[1] - below.position[1]
+                height = max(above.text_height, below.text_height)
+                ax0, ax1 = x_range(above)
+                if 0 < dy <= 2.5 * height and ax0 <= bx1 and bx0 <= ax1:
+                    secondary.add(i)
+                    break
+    return secondary
+
 
 def _extract_row_data(row: pd.Series, columns: list[str]) -> dict[str, str]:
     data: dict[str, str] = {}

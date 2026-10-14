@@ -92,7 +92,7 @@ def run_pipeline(drawing_path: str, sheet_path: str, log=None,
     """
     df = load_spreadsheet(sheet_path)
     df = filter_dataframe_by_building(df, building_col, extract_building_id(drawing_path))
-    scan = scan_drawing(drawing_path, log_fn=log)
+    scan = scan_drawing(drawing_path, log_fn=log, known_room_ids=df[room_col])
     assoc = associate_texts_with_polygons(scan.room_texts, scan.polygons, log_fn=log)
     summary = match_rooms(scan.room_texts, assoc, df, room_col,
                           [building_col, floor_col, room_col, *detail_cols])
