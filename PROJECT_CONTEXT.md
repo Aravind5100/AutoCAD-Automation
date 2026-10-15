@@ -43,10 +43,13 @@
 - **Text report (D25, 2026-10-14):** "Save report…" button in the Results tab → `<output>_report.txt` (UTF-8 BOM):
   header, summary, sections NEEDS CHECK / CREATED / SKIPPED / NOT IN SPREADSHEET / NOT IN DRAWING
   (`pipeline.report_text`). The log is unchanged. Owner chose .txt (over .docx/.csv) and a button (over automatic).
-- **Key grip inside the room (D26, 2026-10-14):** key/detail TEXTs are MIDDLE_CENTER aligned (grip = text centre);
-  the key's grip is forced inside its room polygon (`utils.interior_point_near`) even when the text overflows.
-  Verified on 10 test drawings after the DWG round trip: 422 keys, 0 grips outside their room.
-- **Tests:** 110 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
+- **Key grip inside the room (D26, 2026-10-14):** key/detail TEXTs are **left-aligned → one insertion point** (a
+  MIDDLE_CENTER try gave two grips; the start point was outside the room for 100/422 keys, and which point ArcGIS
+  reads is not verified). The key's point is forced inside its room (`utils.interior_point_near`) even when the
+  text overflows. **Detail lines too** (owner, same day): the block moves to the nearest position where every line's
+  point is inside (`annotation_writer._points_inside`), else each point moves inside. Verified on 10 test drawings
+  after the DWG round trip with Room Name + Department Name: 831 key/detail texts, 1 point each, 0 outside.
+- **Tests:** 111 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
   B10/B11). The 2 real-AutoCAD integration tests pass (`run_tests.bat acad`).
 - **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run
   (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
@@ -232,7 +235,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | `build_exe.spec` | PyInstaller 6 one-folder build of the Qt app → `dist\Room Layer Tool\Room Layer Tool.exe` (no UPX, Tkinter excluded, ezdxf data bundled) |
 | `packaging/README.md` | Short install/usage guide shipped inside the ZIP (for the supervisor) |
 | `setup.bat` / `run.bat` | Source setup (venv + pip incl. PySide6) and launch |
-| `tests/` + `run_tests.bat` | 110 offline tests + `test_acad_integration.py` (opt-in) |
+| `tests/` + `run_tests.bat` | 111 offline tests + `test_acad_integration.py` (opt-in) |
 | `README.md` | Developer/user README for the source version |
 | `CLAUDE.md` | Imports this file |
 | `AutoCAD_Project_Learning_Report.docx` | 31-page learning report written 2026-09-29 (historical snapshot) |
@@ -245,7 +248,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | Per matched room | closed **copy** of its polygon (outlines; once per polygon even if 2+ labels share it) + **TEXT = key** inside the room (keys) + one **TEXT per non-empty ticked column**, stacked under the key, in column order (details) |
 | Key | `<Building>-<Floor>-<Room>` with values **exactly as in the spreadsheet** (trimmed only), e.g. `0036-1-022`, `0132-01-101` |
 | Tag size | the room label's text height, shrunk to 75%/50% if needed to fit (key and details share one size) |
-| Tag alignment | MIDDLE_CENTER (`halign 1`, `valign 2`): insertion/alignment point = centre of the text; the key's point is always inside its room polygon (D26) |
+| Tag alignment | left (`halign 0`): a single insertion point (bottom-left of the text); the points of the key and of every detail line are always inside the room polygon (D26) |
 | XData | app `ROOM_INFO_AI` on every written entity: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type` (`room_outline` / `room_key` / `room_detail`; `room_layer` in drawings from before D19) + `field` (column name, details only) |
 | Not written | blocks, attributes, rectangles; unmatched rooms; rooms without a polygon |
 | Originals | untouched (layers, polygons, labels) |
@@ -315,7 +318,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | D23 | **Leading zeros confirmed by the user**: `match_rooms` collects unique all-digit pairs equal without leading zeros (`leading_zero_matches`); `pipeline.run(confirm_leading_zeros=...)` returns `USE_DRAWING` (room part of the key = drawing label) / `USE_SHEET` / None (skip); the Qt worker emits `confirm_needed` and waits for `MainWindow.ask_leading_zeros` (3-button QMessageBox); one dialog for all pairs (owner chose this over one per room, and asked for the drawing/spreadsheet choice); no callback → skipped, logged | The owner preferred matching with confirmation over fixing the data first | owner 2026-10-14 |
 | D24 | **Label centre** links a label to its outline (`polygon_matcher.label_anchor`: bbox centre, else insert point); key placement "centred in the room" only when the outline has this one label and contains it | Centred labels wider than shafts started outside them → wrong outline, keys far away | owner report 2026-10-14 |
 | D25 | **Text report** via a "Save report…" button (`pipeline.report_text`, `default_report_path`); UTF-8 with BOM for Notepad | Easier for the user to check rooms outside the app; log unchanged | owner 2026-10-14 |
-| D26 | **Key grip inside the room**: TEXTs MIDDLE_CENTER aligned; if the key's centre is outside the room, the block moves to the inside point nearest to it (`interior_point_near`, grid sample) and the room is flagged | Owner: the blue grip must be in its room so ArcGIS picks it up | owner 2026-10-14 |
+| D26 | **Key grip inside the room**: TEXTs left-aligned (one grip); if the key's insertion point is outside the room, the block moves to the inside point nearest to it (`interior_point_near`, grid sample) and the room is flagged. A MIDDLE_CENTER version (commit `e70a3fc`) was replaced: justified text has two grips and the start one was outside for 100/422 keys | Owner: the blue grip must be in its room so ArcGIS picks it up; "two points could confuse ArcGIS" → owner chose one left-aligned point | owner 2026-10-14 |
 | D21 | **Re-run replaces**: entities with our XData (TEXT/MTEXT/polylines — not the old block-era INSERTs) are deleted and every room is written again; layers they leave unused are removed (never `0`, `Defpoints` or the current layer); room notes say "replaces the key from an earlier run" | Lets the owner add details / rename layers on an output drawing (B23). Hand edits to the tool's entities are lost | owner asked to fix B23, 2026-10-07 |
 
 ---
@@ -369,7 +372,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 
 **Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (`Room_Layer_Tool_v2.1.zip`); 3-layer
 ArcGIS-oriented output (outlines / keys / optional details) with visible keys; Floor box; re-run replaces earlier output;
-per-room results table + text report; 110 + 2 tests; README, packaging README, learning report.
+per-room results table + text report; 111 + 2 tests; README, packaging README, learning report.
 
 **Proved on real data:** 62/62 rooms of building 0036 matched and written (also with the 3-layer output); conversions produce real 2018 DWGs
 (`AC1032`); originals untouched; XData links survive conversion; the packaged exe gives identical tag positions to source.
@@ -455,3 +458,5 @@ Unsigned exe → Windows SmartScreen "More info → Run anyway" (documented in t
 19. Krug B `15` vs `015`: the sheet really holds `15` (text). Owner: "ask the user to confirm, then match" → D23, one dialog for all pairs, with a choice of the drawing's number (`015`) or the spreadsheet's (`15`), or skip.
 20. Owner: keys in Finley 01 "jumped" (TELDATA, SHAFT7/8) → D24 (link by label centre). Owner: a separate report file → D25 (text file, "Save report…" button).
 21. Owner: the tag's blue grip must be inside its room for ArcGIS → D26 (middle-centre text, grip forced inside).
+22. Owner: "two dots per text? confuses ArcGIS?" → justified text has two grips; owner chose left-aligned, one point inside the room.
+23. Owner: room details should also have their point inside the room → every detail line's point forced inside (D26).

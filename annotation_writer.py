@@ -29,7 +29,6 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 import ezdxf
-from ezdxf.enums import TextEntityAlignment
 
 from config import (
     DEFAULT_TEXT_HEIGHT,
@@ -53,6 +52,7 @@ from metadata_utils import (
 from utils import (
     build_room_key,
     interior_point_near,
+    interior_points_by_distance,
     normalize_room_id,
     point_in_polygon,
     polygon_centroid,
@@ -304,10 +304,13 @@ def _add_labels(msp, label, key: str, details: list[str],
     under the label. If the block with details never fits, the key is placed
     on its own that way and the details go under it.
 
-    Every line is MIDDLE_CENTER aligned, so its insertion point (the grip in
-    AutoCAD, the point ArcGIS uses) is the centre of the text. The key's
-    insertion point is always inside the room: if the chosen spot puts it
-    outside, the whole block moves to the inside point nearest to it.
+    Every line is left-aligned, so it has a single insertion point (one grip
+    in AutoCAD; justified text would add a second one). Every line's
+    insertion point -- the key's and each detail's -- is inside the room: if
+    the chosen spot puts one outside, the whole block moves to the nearest
+    position where all points are inside; if the room is too small for the
+    block, each point moves to the inside spot nearest to it. The text may
+    then run past a wall of a small room, but its points stay inside.
     """
     if label is None:
         return [], True
@@ -359,25 +362,37 @@ def _add_labels(msp, label, key: str, details: list[str],
         (key_point,), height, _ = place([key])
         points = stack(len(lines), height, key_point[0], key_point[1] + height)
 
-    # Centre of each line (all lines centred on the block's middle)
-    block_width = max(height * _TEXT_WIDTH_FACTOR * len(t) for t in lines)
-    centre_x = points[0][0] + block_width / 2
-    anchors = [(centre_x, y + height / 2) for _, y in points]
-    if not point_in_polygon(*anchors[0], room):       # the key's grip must be inside the room
-        target = interior_point_near(room, anchors[0])
-        dx, dy = target[0] - anchors[0][0], target[1] - anchors[0][1]
-        anchors = [(x + dx, y + dy) for x, y in anchors]
+    anchors = _points_inside(list(points), room)     # insertion point (bottom-left) of each line
+    if anchors != list(points):
         ok = False
     texts = [_text(msp, t, height, a, layers.keys if i == 0 else layers.details)
              for i, (t, a) in enumerate(zip(lines, anchors))]
     return texts, ok
 
 
-def _text(msp, text: str, height: float, centre: tuple[float, float], layer: str):
-    """TEXT whose insertion point is the middle of the text (MIDDLE_CENTER)."""
-    entity = msp.add_text(text, height=height, dxfattribs={"layer": layer})
-    entity.set_placement(centre, align=TextEntityAlignment.MIDDLE_CENTER)
-    return entity
+def _points_inside(anchors: list[tuple[float, float]], room) -> list[tuple[float, float]]:
+    """Move the block of insertion points so that every point is inside *room*.
+
+    Unchanged when all are inside already. Otherwise the block keeps its shape
+    and moves to the nearest position (key point first) where all points are
+    inside; failing that, each outside point moves to the inside spot nearest to it.
+    """
+    def all_inside(points):
+        return all(point_in_polygon(x, y, room) for x, y in points)
+
+    if all_inside(anchors):
+        return anchors
+    kx, ky = anchors[0]
+    for tx, ty in interior_points_by_distance(room, (kx, ky)):
+        moved = [(x + tx - kx, y + ty - ky) for x, y in anchors]
+        if all_inside(moved):
+            return moved
+    return [p if point_in_polygon(*p, room) else interior_point_near(room, p) for p in anchors]
+
+
+def _text(msp, text: str, height: float, insert: tuple[float, float], layer: str):
+    """Left-aligned TEXT: one insertion point (bottom-left of the text)."""
+    return msp.add_text(text, height=height, dxfattribs={"layer": layer, "insert": insert})
 
 
 def text_anchor(entity) -> tuple[float, float]:

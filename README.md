@@ -342,10 +342,11 @@ text starts), so a centred label that is wider than a small room (a shaft) still
 A key is only moved to the middle of an outline when that outline belongs to this label alone;
 otherwise it stays next to its label.
 
-Key and detail texts are **middle-centre aligned**: their insertion point (the blue grip in
-AutoCAD, the point ArcGIS uses for the annotation) is the middle of the text, and the key's
-insertion point is **always inside its room** — even when the text is wider than a small room
-(e.g. a shaft) and overflows its walls.
+Key and detail texts are **left-aligned**, so each has a **single** insertion point (one blue
+grip in AutoCAD — justified text would show a second one), and the insertion point of the key
+**and of every detail line** is **always inside its room** — the point ArcGIS gets for the
+annotation. When the texts are wider than a small room (e.g. a shaft) they may run past a wall,
+but their points stay inside.
 
 **Which texts count as room labels:** any text equal to a room ID of the spreadsheet (for the
 chosen building and floor) — so names without digits like `LOBBY`, `MECH` or `WOMENS` are

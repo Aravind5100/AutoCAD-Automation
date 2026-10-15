@@ -210,13 +210,13 @@ def polygon_centroid(vertices: list[tuple[float, float]]) -> tuple[float, float]
     return (cx, cy)
 
 
-def interior_point_near(
+def interior_points_by_distance(
     vertices: list[tuple[float, float]], near: tuple[float, float], steps: int = 24,
-) -> tuple[float, float]:
-    """A point inside the polygon, as close as possible to *near*.
+) -> list[tuple[float, float]]:
+    """Points inside the polygon, nearest to *near* first.
 
     Samples a grid over the polygon's bounding box (plus the centroid) and
-    keeps the inside sample nearest to *near*. Falls back to the centroid.
+    keeps the samples inside the polygon.
     """
     min_x, min_y, max_x, max_y = polygon_bbox(vertices)
     dx, dy = (max_x - min_x) / steps, (max_y - min_y) / steps
@@ -224,9 +224,15 @@ def interior_point_near(
     samples += [(min_x + (i + 0.5) * dx, min_y + (j + 0.5) * dy)
                 for i in range(steps) for j in range(steps)]
     inside = [p for p in samples if point_in_polygon(p[0], p[1], vertices)]
-    if not inside:
-        return samples[0]
-    return min(inside, key=lambda p: (p[0] - near[0]) ** 2 + (p[1] - near[1]) ** 2)
+    return sorted(inside, key=lambda p: (p[0] - near[0]) ** 2 + (p[1] - near[1]) ** 2)
+
+
+def interior_point_near(
+    vertices: list[tuple[float, float]], near: tuple[float, float], steps: int = 24,
+) -> tuple[float, float]:
+    """A point inside the polygon, as close as possible to *near* (else the centroid)."""
+    inside = interior_points_by_distance(vertices, near, steps)
+    return inside[0] if inside else polygon_centroid(vertices)
 
 
 def polygon_bbox(
