@@ -502,6 +502,11 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.filter_combo)
         bar.addSpacing(12)
         bar.addWidget(self.summary, 1)
+        self.report_btn = QPushButton("Save report…")
+        self.report_btn.setToolTip("Save the room results as a text file (Notepad) to check rooms there")
+        self.report_btn.clicked.connect(self._save_report)
+        self.report_btn.setEnabled(False)
+        bar.addWidget(self.report_btn)
         rlay.addLayout(bar)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Room", "Key", "Status", "Note"])
@@ -770,6 +775,7 @@ class MainWindow(QMainWindow):
             self.settings.setValue(f"layer_{name}", value)
         self.settings.setValue("detail_cols", request.detail_cols)
         self.result = None
+        self.report_btn.setEnabled(False)
         self._fill_table([])
         self.summary.setText("Running…")
         is_dwg = request.drawing_path.lower().endswith(".dwg")
@@ -805,6 +811,8 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, result):
         self.result = result
+        self.result_request = self.worker.request if self.worker else None
+        self.report_btn.setEnabled(self.result_request is not None)
         self.progress.setValue(self.progress.maximum())
         self._fill_table(result.rows)
         self.tabs.setCurrentIndex(0)
@@ -860,6 +868,28 @@ class MainWindow(QMainWindow):
         if clicked is use_sheet:
             return pipeline.USE_SHEET
         return None
+
+    def _save_report(self):
+        """Ask where to save the text report of the last run, then write it."""
+        import pipeline
+        if self.result is None or getattr(self, "result_request", None) is None:
+            return
+        start = pipeline.default_report_path(self.result.output_path)
+        path, _ = QFileDialog.getSaveFileName(self, "Save Report As", start, "Text files (*.txt)")
+        if not path:
+            return
+        if not path.lower().endswith(".txt"):
+            path += ".txt"
+        text = pipeline.report_text(self.result, self.result_request,
+                                    spreadsheet=self.sheet_edit.text())
+        try:
+            with open(path, "w", encoding="utf-8-sig") as f:      # BOM: Notepad shows ⚠ etc.
+                f.write(text)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, f"The report could not be saved:\n{exc}")
+            return
+        self.log(f"Report saved: {path}", "SUCCESS")
+        self.set_status(f"Report saved as {os.path.basename(path)}")
 
     def _on_failed(self, message: str):
         self._end_run("Failed — see the Log tab.", "ERROR", message)

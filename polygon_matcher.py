@@ -6,8 +6,10 @@ then matches them against spreadsheet data.
 
 Association strategy
 ~~~~~~~~~~~~~~~~~~~~
-1. For each room text, find all polygons whose bounding box contains the
-   text insertion point (fast pre-filter).
+1. For each room text, take the centre of the whole label (its insertion
+   point if the extent is unknown) and find all polygons whose bounding box
+   contains it (fast pre-filter). The centre, not the insertion point: a
+   centred label wider than a small room (a shaft) starts outside the room.
 2. Among those, run a full point-in-polygon test.
 3. If multiple polygons contain the point, choose the **smallest** by area
    (the tightest room boundary).
@@ -115,7 +117,7 @@ def associate_texts_with_polygons(
     unmatched = 0
 
     for rt in room_texts:
-        px, py = rt.position[0], rt.position[1]
+        px, py = label_anchor(rt)
         assoc = TextPolygonAssociation(
             room_id=rt.text,
             text_handle=rt.handle,
@@ -309,6 +311,14 @@ def apply_leading_zero_matches(summary: MatchSummary) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def label_anchor(rt) -> tuple[float, float]:
+    """The point that stands for a label: the centre of its extent, else its insertion point."""
+    if rt.label_bbox is not None:
+        x0, y0, x1, y1 = rt.label_bbox
+        return (x0 + x1) / 2, (y0 + y1) / 2
+    return rt.position[0], rt.position[1]
+
 
 def _secondary_labels(room_texts: list, associations: list) -> set[int]:
     """Indexes of labels that sit directly under another label in the same room.

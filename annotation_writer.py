@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 import ezdxf
+from ezdxf.enums import TextEntityAlignment
 
 from config import (
     DEFAULT_TEXT_HEIGHT,
@@ -49,7 +50,13 @@ from metadata_utils import (
     register_xdata_app,
     write_xdata,
 )
-from utils import build_room_key, normalize_room_id, point_in_polygon, polygon_centroid
+from utils import (
+    build_room_key,
+    interior_point_near,
+    normalize_room_id,
+    point_in_polygon,
+    polygon_centroid,
+)
 
 _LIST_LIMIT = 10    # max room IDs listed per warning in the log
 _TEXT_WIDTH_FACTOR = 0.7    # estimated character width, in text heights
@@ -164,6 +171,10 @@ def write_room_layers(
     failed: list[str] = []
     rooms_by_polygon: dict[str, list[str]] = {}
     outline_copies: set[str] = set()         # polygon handles already copied (B25)
+    labels_per_polygon: dict[str, int] = {}  # a key is never moved to a shared outline's centre
+    for m in matches:
+        if m.matched:
+            labels_per_polygon[m.polygon_handle] = labels_per_polygon.get(m.polygon_handle, 0) + 1
     results: dict[str, RoomOutcome] = {}     # room_id -> outcome, in match order
 
     def outcome(room_id, **kw):
@@ -198,7 +209,9 @@ def write_room_layers(
                 written.append((copy, OUTLINE, ""))
             texts, fits = _add_labels(msp, labels.get(match.text_handle), key,
                                       [value for _, value in details],
-                                      match.polygon_vertices, layers)
+                                      match.polygon_vertices, layers,
+                                      centre_ok=labels_per_polygon.get(match.polygon_handle, 0) <= 1
+                                      and match.match_method == "contains")
             if texts:
                 written.append((texts[0], KEY, ""))
                 written += [(t, DETAIL, col) for t, (col, _) in zip(texts[1:], details)]
@@ -275,7 +288,7 @@ def _add_polygon(doc, msp, vertices: list[tuple[float, float]], layer: str):
 
 
 def _add_labels(msp, label, key: str, details: list[str],
-                room: list[tuple[float, float]], layers: OutputLayers):
+                room: list[tuple[float, float]], layers: OutputLayers, centre_ok: bool = True):
     """Write *key* (keys layer) and *details* (details layer, one line each)
     as a block of text lines near the room label, inside the room where possible.
 
@@ -283,11 +296,18 @@ def _add_labels(msp, label, key: str, details: list[str],
     False when no spot kept every line inside the room polygon.
 
     Candidate spots, in order: under the whole room label, above it, centred
-    in the room -- first at the room label's text height, then smaller (for
-    small rooms). The first spot where every line fits inside the room
-    polygon wins; otherwise the first full-size spot where the block at least
-    starts inside; otherwise under the label. If the block with details never
-    fits, the key is placed on its own that way and the details go under it.
+    in the room (only when *centre_ok*: the room has this label alone and
+    contains it -- otherwise the centre can be far from the label) -- first at
+    the room label's text height, then smaller (for small rooms). The first
+    spot where every line fits inside the room polygon wins; otherwise the
+    first full-size spot where the block at least starts inside; otherwise
+    under the label. If the block with details never fits, the key is placed
+    on its own that way and the details go under it.
+
+    Every line is MIDDLE_CENTER aligned, so its insertion point (the grip in
+    AutoCAD, the point ArcGIS uses) is the centre of the text. The key's
+    insertion point is always inside the room: if the chosen spot puts it
+    outside, the whole block moves to the inside point nearest to it.
     """
     if label is None:
         return [], True
@@ -308,11 +328,13 @@ def _add_labels(msp, label, key: str, details: list[str],
         widths = [height * _TEXT_WIDTH_FACTOR * len(t) for t in lines]    # estimated
         block = len(lines) * height + (len(lines) - 1) * gap
         width = max(widths)
-        return widths, [
+        spots = [
             stack(len(lines), height, left, bottom - gap),                # under the label
             stack(len(lines), height, left, top + gap + block),           # above the label
-            stack(len(lines), height, cx - width / 2, cy + block / 2),    # centred in the room
         ]
+        if centre_ok:
+            spots.append(stack(len(lines), height, cx - width / 2, cy + block / 2))   # centred
+        return widths, spots
 
     def fits(points, widths, height):
         return all(point_in_polygon(px, py, room)
@@ -336,13 +358,35 @@ def _add_labels(msp, label, key: str, details: list[str],
     if not ok and details:
         (key_point,), height, _ = place([key])
         points = stack(len(lines), height, key_point[0], key_point[1] + height)
-    texts = [_text(msp, t, height, p, layers.keys if i == 0 else layers.details)
-             for i, (t, p) in enumerate(zip(lines, points))]
+
+    # Centre of each line (all lines centred on the block's middle)
+    block_width = max(height * _TEXT_WIDTH_FACTOR * len(t) for t in lines)
+    centre_x = points[0][0] + block_width / 2
+    anchors = [(centre_x, y + height / 2) for _, y in points]
+    if not point_in_polygon(*anchors[0], room):       # the key's grip must be inside the room
+        target = interior_point_near(room, anchors[0])
+        dx, dy = target[0] - anchors[0][0], target[1] - anchors[0][1]
+        anchors = [(x + dx, y + dy) for x, y in anchors]
+        ok = False
+    texts = [_text(msp, t, height, a, layers.keys if i == 0 else layers.details)
+             for i, (t, a) in enumerate(zip(lines, anchors))]
     return texts, ok
 
 
-def _text(msp, text: str, height: float, insert: tuple[float, float], layer: str):
-    return msp.add_text(text, height=height, dxfattribs={"layer": layer, "insert": insert})
+def _text(msp, text: str, height: float, centre: tuple[float, float], layer: str):
+    """TEXT whose insertion point is the middle of the text (MIDDLE_CENTER)."""
+    entity = msp.add_text(text, height=height, dxfattribs={"layer": layer})
+    entity.set_placement(centre, align=TextEntityAlignment.MIDDLE_CENTER)
+    return entity
+
+
+def text_anchor(entity) -> tuple[float, float]:
+    """The point a TEXT stands for: its alignment point when justified, else its insert."""
+    if (entity.dxf.get("halign", 0) or entity.dxf.get("valign", 0)) and entity.dxf.hasattr("align_point"):
+        p = entity.dxf.align_point
+    else:
+        p = entity.dxf.insert
+    return float(p[0]), float(p[1])
 
 
 def layers_with_drawing_content(doc, names) -> list[str]:

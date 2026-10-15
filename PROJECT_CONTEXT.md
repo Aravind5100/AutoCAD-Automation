@@ -36,7 +36,17 @@
 - **Leading-zero matches (D23, 2026-10-14):** a drawing label that matches a sheet room only without leading zeros
   (all digits, unique on both sides) is offered in one dialog: **Use drawing** (key `0002-B-015`) / **Use
   spreadsheet** (key `0002-B-15`) / **Skip** (unmatched) (B32). Krug Hall B: 44/44, 44/44, 41/44.
-- **Tests:** 107 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
+- **Key placement fix (D24, 2026-10-14):** owner saw keys "jump" (Finley 01: TELDATA, SHAFT7/8). Labels are centred
+  TEXT wider than small shafts, so the insertion point lay outside the shaft → linked to a big outline (TELDATA to
+  room 116's, key put 257 units away at its centre). Now labels are linked by their **centre** (`label_anchor`), and
+  the centre-of-room placement is only used when the outline belongs to that one label ("contains" link).
+- **Text report (D25, 2026-10-14):** "Save report…" button in the Results tab → `<output>_report.txt` (UTF-8 BOM):
+  header, summary, sections NEEDS CHECK / CREATED / SKIPPED / NOT IN SPREADSHEET / NOT IN DRAWING
+  (`pipeline.report_text`). The log is unchanged. Owner chose .txt (over .docx/.csv) and a button (over automatic).
+- **Key grip inside the room (D26, 2026-10-14):** key/detail TEXTs are MIDDLE_CENTER aligned (grip = text centre);
+  the key's grip is forced inside its room polygon (`utils.interior_point_near`) even when the text overflows.
+  Verified on 10 test drawings after the DWG round trip: 422 keys, 0 grips outside their room.
+- **Tests:** 110 offline tests pass (2 AutoCAD tests skipped unless enabled; 2 expected failures = open issues
   B10/B11). The 2 real-AutoCAD integration tests pass (`run_tests.bat acad`).
 - **Verified on the owner's real data** (see §0.3): building 0036 → 62 rooms written, 9–15 s per run
   (3-layer version with Room Name ticked: 62 written, 15 s, 5 "needs check": the 4 below + `009B`).
@@ -222,7 +232,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | `build_exe.spec` | PyInstaller 6 one-folder build of the Qt app → `dist\Room Layer Tool\Room Layer Tool.exe` (no UPX, Tkinter excluded, ezdxf data bundled) |
 | `packaging/README.md` | Short install/usage guide shipped inside the ZIP (for the supervisor) |
 | `setup.bat` / `run.bat` | Source setup (venv + pip incl. PySide6) and launch |
-| `tests/` + `run_tests.bat` | 107 offline tests + `test_acad_integration.py` (opt-in) |
+| `tests/` + `run_tests.bat` | 110 offline tests + `test_acad_integration.py` (opt-in) |
 | `README.md` | Developer/user README for the source version |
 | `CLAUDE.md` | Imports this file |
 | `AutoCAD_Project_Learning_Report.docx` | 31-page learning report written 2026-09-29 (historical snapshot) |
@@ -235,6 +245,7 @@ layers `ROOM_OUTLINES` + `ROOM_KEYS` and no details (owner chose to leave the Tk
 | Per matched room | closed **copy** of its polygon (outlines; once per polygon even if 2+ labels share it) + **TEXT = key** inside the room (keys) + one **TEXT per non-empty ticked column**, stacked under the key, in column order (details) |
 | Key | `<Building>-<Floor>-<Room>` with values **exactly as in the spreadsheet** (trimmed only), e.g. `0036-1-022`, `0132-01-101` |
 | Tag size | the room label's text height, shrunk to 75%/50% if needed to fit (key and details share one size) |
+| Tag alignment | MIDDLE_CENTER (`halign 1`, `valign 2`): insertion/alignment point = centre of the text; the key's point is always inside its room polygon (D26) |
 | XData | app `ROOM_INFO_AI` on every written entity: `room_id, polygon_handle, building_id, text_handle, match_method, annotation_type` (`room_outline` / `room_key` / `room_detail`; `room_layer` in drawings from before D19) + `field` (column name, details only) |
 | Not written | blocks, attributes, rectangles; unmatched rooms; rooms without a polygon |
 | Originals | untouched (layers, polygons, labels) |
@@ -272,7 +283,8 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | Oct 7 | `Room_Layer_Tool_v2.1.zip` built and verified (self-test PASS from the exe and from a fresh unzip). |
 | Oct 14 `336fe07` | B25 (shared outline copied once) and B30 (output layer clashing with drawing content stops the run) fixed. |
 | Oct 14 | **D22:** labels = spreadsheet room IDs too (B11 false negatives); stacked labels ranked (top wins). Checked on 11 test drawings. |
-| Oct 14 | **D23:** leading-zero matches confirmed by the user in one dialog (B32). |
+| Oct 14 `0b1ff75` | **D23:** leading-zero matches confirmed by the user in one dialog (B32). |
+| Oct 14 | **D24:** labels linked by their centre; no centre placement on shared outlines (keys no longer jump). **D25:** "Save report…" text report. |
 
 ---
 
@@ -301,6 +313,9 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | D20 | **Floor box** in step 1 (drop-down of the building's floors, editable, required in the Qt app); `RunRequest.floor_id` filters the sheet to building + floor; repeated room numbers within the used rows are logged | Room numbers repeat across floors (B21); owner chose a Floor box over inferring the floor | owner 2026-10-07 |
 | D22 | **Labels from the spreadsheet**: a text equal to a spreadsheet room ID (building + floor) is a label even without digits; stacked labels (one under another in the same polygon) rank last for duplicate IDs and, if unmatched, are not reported | Owner reported rooms "not in drawing" though present (`LOBBY`, `MECH`…); area figures under room numbers stole room numbers | owner 2026-10-14 |
 | D23 | **Leading zeros confirmed by the user**: `match_rooms` collects unique all-digit pairs equal without leading zeros (`leading_zero_matches`); `pipeline.run(confirm_leading_zeros=...)` returns `USE_DRAWING` (room part of the key = drawing label) / `USE_SHEET` / None (skip); the Qt worker emits `confirm_needed` and waits for `MainWindow.ask_leading_zeros` (3-button QMessageBox); one dialog for all pairs (owner chose this over one per room, and asked for the drawing/spreadsheet choice); no callback → skipped, logged | The owner preferred matching with confirmation over fixing the data first | owner 2026-10-14 |
+| D24 | **Label centre** links a label to its outline (`polygon_matcher.label_anchor`: bbox centre, else insert point); key placement "centred in the room" only when the outline has this one label and contains it | Centred labels wider than shafts started outside them → wrong outline, keys far away | owner report 2026-10-14 |
+| D25 | **Text report** via a "Save report…" button (`pipeline.report_text`, `default_report_path`); UTF-8 with BOM for Notepad | Easier for the user to check rooms outside the app; log unchanged | owner 2026-10-14 |
+| D26 | **Key grip inside the room**: TEXTs MIDDLE_CENTER aligned; if the key's centre is outside the room, the block moves to the inside point nearest to it (`interior_point_near`, grid sample) and the room is flagged | Owner: the blue grip must be in its room so ArcGIS picks it up | owner 2026-10-14 |
 | D21 | **Re-run replaces**: entities with our XData (TEXT/MTEXT/polylines — not the old block-era INSERTs) are deleted and every room is written again; layers they leave unused are removed (never `0`, `Defpoints` or the current layer); room notes say "replaces the key from an earlier run" | Lets the owner add details / rename layers on an output drawing (B23). Hand edits to the tool's entities are lost | owner asked to fix B23, 2026-10-07 |
 
 ---
@@ -341,7 +356,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 | B24 | open 🟢 | Outline copies and point-in-polygon use vertices only: arc segments (bulges) become straight. 0036 has no arcs. |
 | B25 | ✅ 2026-10-14 | A polygon shared by 2+ labels was copied once per label (duplicate outlines). Now copied once (XData of the first room); each room still gets its key; all flagged "outline shared with … (copied once)". Not present in 0036. |
 | B26 | open 🟢 | Only model space is scanned: labels/outlines inside blocks, xrefs or paper space are not found. |
-| B27 | open 🟢 | Label position = TEXT insert point (wrong for centred/right-aligned TEXT); rotated labels get horizontal tags. 0036 has no rotated labels. |
+| B27 | partly ✅ 2026-10-14 (D24) | Label position = TEXT insert point (wrong for centred/right-aligned TEXT) — association now uses the label centre. Rotated labels still get horizontal tags. 0036 has no rotated labels. |
 | B28 | open 🟡 | No overall timeout: an AutoCAD dialog not covered by FILEDIA/CMDDIA/PROXYNOTICE (missing fonts/xrefs) blocks the run; Cancel waits for the COM call. |
 | B29 | open 🟡 | Whole drawing goes DWG→DXF→ezdxf→DXF→DWG; only hatch/MTEXT counts and XData verified. Dynamic blocks, AEC/proxy objects, annotative scales not checked. |
 | B30 | ✅ 2026-10-14 | Output layer names were not checked against the drawing's layers. Now a layer holding the drawing's own content (case-insensitive) stops the run with a message; empty layers / earlier tool output are fine; the details layer is only checked when details are ticked. Verified on 0036 with `A-AREA-PLINE`. For DWG the check runs after the AutoCAD conversion (layer names are only known then). |
@@ -354,7 +369,7 @@ XData handles stay valid through DXF → DWG [verified with AutoCAD 2023].
 
 **Delivered:** Qt desktop app; standalone exe + self-test; ZIP for a supervisor (`Room_Layer_Tool_v2.1.zip`); 3-layer
 ArcGIS-oriented output (outlines / keys / optional details) with visible keys; Floor box; re-run replaces earlier output;
-per-room results table; 107 + 2 tests; README, packaging README, learning report.
+per-room results table + text report; 110 + 2 tests; README, packaging README, learning report.
 
 **Proved on real data:** 62/62 rooms of building 0036 matched and written (also with the 3-layer output); conversions produce real 2018 DWGs
 (`AC1032`); originals untouched; XData links survive conversion; the packaged exe gives identical tag positions to source.
@@ -438,3 +453,5 @@ Unsigned exe → Windows SmartScreen "More info → Run anyway" (documented in t
 17. Owner: "push it and tell next steps" → `3fcf693`; then "fix B25 and B30" → done (2026-10-14).
 18. Owner: "not reading all the rooms… says not in drawing" + test folder → D22 (spreadsheet IDs as labels; stacked labels ranked). Krug B leading zeros (B32) left for the owner.
 19. Krug B `15` vs `015`: the sheet really holds `15` (text). Owner: "ask the user to confirm, then match" → D23, one dialog for all pairs, with a choice of the drawing's number (`015`) or the spreadsheet's (`15`), or skip.
+20. Owner: keys in Finley 01 "jumped" (TELDATA, SHAFT7/8) → D24 (link by label centre). Owner: a separate report file → D25 (text file, "Save report…" button).
+21. Owner: the tag's blue grip must be inside its room for ArcGIS → D26 (middle-centre text, grip forced inside).

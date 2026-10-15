@@ -194,6 +194,21 @@ class TestRun(QtTestCase):
             with mock.patch.object(qt_ui.QMessageBox, "exec", lambda box: click(box)):
                 self.assertEqual(self.win.ask_leading_zeros([("015", "15")]), expected)
 
+    def test_save_report_button(self):
+        self.ready_window()
+        self.assertFalse(self.win.report_btn.isEnabled())             # nothing to report yet
+        self.win.start_run(self.path("out.dxf"), wait=True)
+        self.assertTrue(self.win.report_btn.isEnabled())
+        target = self.path("my_report")                                # .txt is added
+        with mock.patch.object(qt_ui.QFileDialog, "getSaveFileName",
+                               return_value=(target, "")) as dialog:
+            self.win.report_btn.click()
+        self.assertTrue(dialog.call_args.args[2].endswith("out_report.txt"))   # suggested name
+        with open(target + ".txt", encoding="utf-8-sig") as f:
+            text = f.read()
+        self.assertIn("CREATED (3)", text)
+        self.assertIn("0132-01-103", text)
+
     def test_wrong_building_shows_warning_and_writes_nothing(self):
         self.ready_window()
         self.win.building_edit.setText("5555")

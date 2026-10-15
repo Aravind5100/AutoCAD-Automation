@@ -252,6 +252,84 @@ def _result_rows(outcomes: list[RoomOutcome], summary, zero_matched=()) -> list[
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Plain-text report of a run (saved by the user; the log is unchanged)
+# ---------------------------------------------------------------------------
+
+def report_text(result: RunResult, request: RunRequest, spreadsheet: str = "",
+                when: str = "") -> str:
+    """Readable report of one run: header, summary, then one section per status.
+
+    Sections: NEEDS CHECK, CREATED, SKIPPED / FAILED, NOT IN SPREADSHEET,
+    NOT IN DRAWING -- each room with its key and note.
+    """
+    import time
+
+    def natural(row):                      # 9 < 10 < 100A < ELEV
+        digits = "".join(ch for ch in row.room if ch.isdigit())
+        return (not row.room[:1].isdigit(), int(digits) if row.room[:1].isdigit() and digits else 0,
+                row.room.upper())
+
+    rows = sorted(result.rows, key=natural)
+    created = [r for r in rows if r.status == CREATED]
+    check = [r for r in created if r.needs_check]
+    skipped = [r for r in rows if r.status in (SKIPPED, "failed")]
+    no_sheet = [r for r in rows if r.status == NOT_IN_SHEET]
+    no_drawing = [r for r in rows if r.status == NOT_IN_DRAWING]
+    width = max([len(r.room) for r in rows] + [4]) + 2
+    key_width = max([len(r.key) for r in rows] + [3]) + 2
+
+    layers = request.layers
+    out = [
+        "Room Layer Tool -- report",
+        "=" * 60,
+        f"Date        : {when or time.strftime('%Y-%m-%d %H:%M')}",
+        f"Drawing     : {request.drawing_path}",
+        f"Spreadsheet : {spreadsheet}" if spreadsheet else None,
+        f"Output      : {result.output_path}",
+        f"Building    : {result.building_id}" + (f"    Floor: {request.floor_id}" if request.floor_id else ""),
+        f"Layers      : outlines {layers.outlines}, keys {layers.keys}"
+        + (f", details {layers.details} ({', '.join(request.detail_cols)})" if request.detail_cols else ""),
+        "",
+        "SUMMARY",
+        f"  Created               {len(created):5}   ({len(check)} need a check)",
+        f"  Skipped / failed      {len(skipped):5}",
+        f"  Not in spreadsheet    {len(no_sheet):5}   (room labels in the drawing without a spreadsheet row)",
+        f"  Not in drawing        {len(no_drawing):5}   (spreadsheet rooms without a label in the drawing)",
+        f"  Spreadsheet rows used {result.sheet_rows:5}",
+        f"  Room labels found     {result.labels_found:5}",
+        f"  Room outlines found   {result.polygons_found:5}",
+    ]
+    out = [line for line in out if line is not None]
+
+    def section(title, items, with_key=True, with_note=True):
+        out.extend(["", f"{title} ({len(items)})", "-" * 60])
+        if not items:
+            out.append("  (none)")
+        for r in items:
+            line = f"  {r.room:<{width}}"
+            if with_key:
+                line += f"{r.key:<{key_width}}"
+            if with_note and r.note:
+                line += r.note
+            out.append(line.rstrip())
+
+    section("NEEDS CHECK", check)
+    section("CREATED", created, with_note=False)
+    section("SKIPPED / FAILED", skipped)
+    section("NOT IN SPREADSHEET", no_sheet, with_key=False)
+    section("NOT IN DRAWING", no_drawing, with_key=False, with_note=False)
+    out.append("")
+    return "\n".join(out)
+
+
+def default_report_path(output_path: str) -> str:
+    """<output name>_report.txt next to the output drawing."""
+    import os
+    return os.path.splitext(output_path)[0] + "_report.txt"
+
+
 __all__ = ["run", "RunRequest", "OutputLayers", "USE_DRAWING", "USE_SHEET", "RunResult", "ResultRow", "RunCancelled", "RunStopped",
+           "report_text", "default_report_path",
            "CREATED", "SKIPPED", "NOT_IN_SHEET", "NOT_IN_DRAWING",
            "INFO", "SUCCESS", "WARN", "ERROR"]

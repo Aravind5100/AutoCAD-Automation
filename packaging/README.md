@@ -59,6 +59,10 @@ To remove it, delete the folder.
 | ○ Not in spreadsheet | A room number in the drawing has no spreadsheet row, e.g. `ELECT1` vs `ELEC1` |
 | ○ Not in drawing | A spreadsheet row has no room number in this drawing (often another floor) |
 
+**Save report…** (Results tab, after a run) saves the results as a text file you can open in
+Notepad: a summary, then the rooms that need a check, all created rooms with their keys, skipped
+rooms, drawing labels not in the spreadsheet and spreadsheet rooms not in the drawing.
+
 Running the tool on a drawing it already processed replaces the earlier output (handy for
 adding Room details or renaming layers later); nothing is duplicated.
 

@@ -132,6 +132,20 @@ class TestPipelineRun(TempDirTestCase):
                              (pipeline.NOT_IN_SHEET, pipeline.NOT_IN_DRAWING))
             self.assertTrue(any("leading zeros" in m and "not used" in m for m in logs), logs)
 
+    def test_report_text(self):
+        req = self.request(floor_id="01")
+        res = pipeline.run(req)
+        text = pipeline.report_text(res, req, spreadsheet="rooms.csv", when="2026-10-14 12:00")
+        for part in ("Room Layer Tool -- report", "Building    : 0132    Floor: 01",
+                     "Spreadsheet : rooms.csv", "NEEDS CHECK (0)", "CREATED (2)",
+                     "SKIPPED / FAILED (0)", "NOT IN SPREADSHEET (1)", "NOT IN DRAWING (1)"):
+            self.assertIn(part, text)
+        created = text.split("CREATED (2)")[1].split("SKIPPED")[0]
+        self.assertLess(created.index("0132-01-101"), created.index("0132-01-102"))
+        self.assertIn("103", text.split("NOT IN SPREADSHEET (1)")[1].split("NOT IN DRAWING")[0])
+        self.assertTrue(pipeline.default_report_path(r"C:\out\x_annotated.dwg")
+                        .endswith("x_annotated_report.txt"))
+
     def test_wrong_building_stops_before_any_work(self):
         with self.assertRaises(pipeline.RunStopped):
             pipeline.run(self.request(building_id="9876"))

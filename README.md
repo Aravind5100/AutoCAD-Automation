@@ -217,6 +217,13 @@ The **Results** tab lists every room, with a filter (**Show**) and a summary lin
 
 The **Log** tab has the full step-by-step log.
 
+
+**Save report…** (next to the filter) saves the results of the last run as a text file —
+suggested name `<output>_report.txt` next to the output drawing. It holds the run details
+(drawing, spreadsheet, output, building, floor, layers), a summary, and the rooms grouped as
+*Needs check*, *Created* (with keys), *Skipped / failed*, *Not in spreadsheet* and *Not in
+drawing*. The Log tab is unchanged.
+
 ### 6. Check the Output
 
 The annotated DWG is saved where you chose in step 5; the full path is shown
@@ -329,6 +336,16 @@ duplicates. Layers left empty by that are removed. Hand edits to the tool's own 
 
 A room number labelled **more than once** in the drawing uses the first label; the extra label
 is listed in Results as *Skipped* and the room is marked *⚠ Check*.
+
+**Which outline a label belongs to** is decided by the centre of the label (not where the
+text starts), so a centred label that is wider than a small room (a shaft) still belongs to it.
+A key is only moved to the middle of an outline when that outline belongs to this label alone;
+otherwise it stays next to its label.
+
+Key and detail texts are **middle-centre aligned**: their insertion point (the blue grip in
+AutoCAD, the point ArcGIS uses for the annotation) is the middle of the text, and the key's
+insertion point is **always inside its room** — even when the text is wider than a small room
+(e.g. a shaft) and overflows its walls.
 
 **Which texts count as room labels:** any text equal to a room ID of the spreadsheet (for the
 chosen building and floor) — so names without digits like `LOBBY`, `MECH` or `WOMENS` are

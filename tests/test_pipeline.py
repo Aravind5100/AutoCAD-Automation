@@ -9,7 +9,8 @@ import unittest
 
 import ezdxf
 
-from annotation_writer import OutputLayers, write_room_layers
+from annotation_writer import OutputLayers, text_anchor, write_room_layers
+from ezdxf.enums import TextEntityAlignment
 from autocad_scanner import scan_drawing
 from metadata_utils import read_xdata
 from tests.helpers import (
@@ -85,8 +86,10 @@ class TestRoomKeys(TempDirTestCase):
             self.assertEqual(read_xdata(tag).room_id, room)
             src = by_room[room]
             self.assertAlmostEqual(tag.dxf.height, src.text_height)
-            self.assertLess(tag.dxf.insert.y + tag.dxf.height, src.label_bbox[1])   # below label
-            self.assertAlmostEqual(tag.dxf.insert.x, src.label_bbox[0])
+            x, y = text_anchor(tag)                         # middle of the key text (its grip)
+            self.assertEqual((tag.dxf.halign, tag.dxf.valign), (1, 2))   # MIDDLE_CENTER
+            self.assertLessEqual(y + tag.dxf.height / 2, src.label_bbox[1] + 1e-6)   # below label
+            self.assertGreater(x, src.label_bbox[0])        # starts under the label, centred
 
     def test_key_label_shrinks_to_fit_small_room(self):
         doc = ezdxf.new("R2018")
@@ -100,6 +103,20 @@ class TestRoomKeys(TempDirTestCase):
         self.assertEqual(created, 1)
         self.assertLess(tag.dxf.height, 5)                    # scaled down
         self.assertTrue(point_in_polygon(tag.dxf.insert.x, tag.dxf.insert.y, room))
+
+    def test_key_grip_inside_room_even_when_the_key_does_not_fit(self):
+        doc = ezdxf.new("R2018")
+        msp = doc.modelspace()
+        shaft = [(0, 0), (20, 0), (20, 20), (0, 20)]          # far too small for the key
+        msp.add_lwpolyline(shaft, close=True)
+        msp.add_lwpolyline([(-200, -200), (200, -200), (200, 200), (-200, 200)], close=True)
+        label = msp.add_text("101", dxfattribs={"height": 5})
+        label.set_placement((10, 10), align=TextEntityAlignment.MIDDLE_CENTER)   # centred label
+        doc.saveas(self.path("0132_SHAFT.dxf"))
+        _, _, created, out = self._run_and_save(self.path("0132_SHAFT.dxf"), "o.dxf")
+        [tag] = room_key_labels(out)["0132-01-101"]
+        self.assertEqual(created, 1)
+        self.assertTrue(point_in_polygon(*text_anchor(tag), shaft))   # grip inside the shaft
 
     def test_two_line_labels_use_the_room_number_line(self):
         doc = ezdxf.new("R2018")
